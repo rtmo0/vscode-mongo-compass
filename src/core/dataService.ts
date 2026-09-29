@@ -351,6 +351,33 @@ export class DataService {
     }
   }
 
+  async listIndexStats(ns: Namespace): Promise<{ stats: Document[]; error?: string }> {
+    try {
+      const stats = await this.collection(ns)
+        .aggregate([{ $indexStats: {} }], { readPreference: 'primary' })
+        .toArray();
+      return { stats: normalizeIndexStats(stats) };
+    } catch (err) {
+      const firstError = (err as Error).message;
+      try {
+        const result = await this.client.db(ns.database).command(
+          {
+            aggregate: ns.collection,
+            pipeline: [{ $indexStats: {} }],
+            cursor: {}
+          },
+          { readPreference: 'primary' }
+        );
+        const stats = (result.cursor?.firstBatch ?? []) as Document[];
+        return { stats: normalizeIndexStats(stats) };
+      } catch (fallbackErr) {
+        const error = (fallbackErr as Error).message || firstError;
+        logger.warn('Index usage stats unavailable', { error, namespace: ns.toString() });
+        return { stats: [], error };
+      }
+    }
+  }
+
   async createIndex(
     ns: Namespace,
     keys: Document,
@@ -457,6 +484,20 @@ export class DataService {
 }
 
 /** `db.collection` namespace helper. */
+function normalizeIndexStats(stats: Document[]): Document[] {
+  return stats.map((stat) => {
+    const accesses = stat.accesses as Document | undefined;
+    const rawOps = accesses?.ops as { toNumber?: () => number } | number | undefined;
+    const ops = typeof rawOps === 'number' ? rawOps : rawOps?.toNumber?.() ?? Number(rawOps ?? 0);
+    const rawSince = accesses?.since;
+    const since = rawSince instanceof Date ? rawSince.toISOString() : rawSince;
+    return {
+      ...stat,
+      accesses: accesses ? { ...accesses, ops, since } : undefined
+    };
+  });
+}
+
 export class Namespace {
   constructor(
     public readonly database: string,

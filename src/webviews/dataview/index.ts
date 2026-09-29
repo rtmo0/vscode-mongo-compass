@@ -200,44 +200,82 @@ interface IndexInfo {
   [k: string]: unknown;
 }
 
+interface IndexUsageStat {
+  name?: string;
+  accesses?: {
+    ops?: number;
+    since?: string | { $date?: string };
+  };
+}
+
+interface IndexesData {
+  namespace: string;
+  indexes: IndexInfo[];
+  searchIndexes: unknown[];
+  indexStats: IndexUsageStat[];
+  indexSizes: Record<string, number>;
+}
+
 function renderIndexes(): HTMLElement {
-  const data = state.data as { namespace: string; indexes: IndexInfo[]; searchIndexes: unknown[] } | null;
-  const wrap = el('div');
+  const data = state.data as IndexesData | null;
+  const wrap = el('div', { className: 'mc-indexes-view' });
   if (!data) {
     return empty('No index data');
   }
 
-  wrap.append(el('div', { className: 'mc-section-title', text: `Indexes (${data.indexes.length})` }));
-
   if (data.indexes.length === 0) {
     wrap.append(empty('No indexes on this collection'));
   } else {
-    const table = el('table', { className: 'mc-table' });
+    const usageByName = new Map((data.indexStats ?? []).map((stat) => [stat.name, stat.accesses]));
+    const tableScroll = el('div', { className: 'mc-index-table-scroll' });
+    const table = el('table', { className: 'mc-index-table' });
     const thead = el('thead');
     const headRow = el('tr');
-    for (const col of ['Name', 'Key', 'Properties', '']) {
-      headRow.append(el('th', { text: col }));
+    for (const col of ['Name & Definition', 'Type', 'Size', 'Usage', 'Properties', 'Status', '']) {
+      const heading = el('span', { text: col });
+      if (col) {
+        heading.append(el('span', { className: 'mc-index-sort', text: '↕' }));
+      }
+      headRow.append(el('th', {}, heading));
     }
     thead.append(headRow);
     const tbody = el('tbody');
     for (const index of data.indexes) {
+      const usage = usageByName.get(index.name);
       const row = el('tr');
-      row.append(el('td', { text: index.name }));
-      const keyText = Object.entries(index.key ?? {})
-        .map(([f, d]) => `${f}: ${formatDirection(d)}`)
-        .join(', ');
-      row.append(el('td', { className: 'mc-mono', text: keyText }));
+
+      const definitionCell = el('td');
+      const definition = el('details', { className: 'mc-index-definition' });
+      const summary = el('summary');
+      summary.append(el('span', { className: 'mc-index-name', text: index.name }));
+      definition.append(summary);
+      definition.append(el('div', { className: 'mc-index-keys mc-mono', text: formatIndexKeys(index.key) }));
+      definitionCell.append(definition);
+      row.append(definitionCell);
+
+      row.append(el('td', {}, indexBadge(indexType(index), 'neutral')));
+      row.append(el('td', { text: formatBytes(data.indexSizes?.[index.name]) }));
+      row.append(el('td', { text: formatIndexUsage(usage) }));
+
       const props: string[] = [];
-      if (index.unique) props.push('unique');
-      if (index.sparse) props.push('sparse');
+      if (index.unique) props.push('UNIQUE');
+      if (index.sparse) props.push('SPARSE');
       if (index.expireAfterSeconds !== undefined) props.push(`TTL ${index.expireAfterSeconds}s`);
-      if (index.partialFilterExpression) props.push('partial');
-      if (index.collation) props.push('collation');
-      if (index.hidden) props.push('hidden');
-      row.append(el('td', { text: props.join(', ') || '—' }));
+      if (index.partialFilterExpression) props.push('PARTIAL');
+      if (index.collation) props.push('COLLATION');
+      if (index.hidden) props.push('HIDDEN');
+      const propertiesCell = el('td', { className: 'mc-index-properties' });
+      if (props.length) {
+        for (const property of props) propertiesCell.append(indexBadge(property, 'neutral'));
+      } else {
+        propertiesCell.textContent = '—';
+      }
+      row.append(propertiesCell);
+      row.append(el('td', {}, indexBadge(index.hidden ? 'HIDDEN' : 'READY', index.hidden ? 'neutral' : 'success')));
+
       const actions = el('td');
       if (index.name !== '_id_') {
-        const dropBtn = el('button', { className: 'mc-btn icon-only', text: '🗑', title: 'Drop index' });
+        const dropBtn = el('button', { className: 'mc-index-drop', text: '×', title: `Drop ${index.name}` });
         dropBtn.addEventListener('click', () => void dropIndex(index.name));
         actions.append(dropBtn);
       }
@@ -245,7 +283,8 @@ function renderIndexes(): HTMLElement {
       tbody.append(row);
     }
     table.append(thead, tbody);
-    wrap.append(table);
+    tableScroll.append(table);
+    wrap.append(tableScroll);
   }
 
   if (data.searchIndexes && data.searchIndexes.length > 0) {
@@ -265,10 +304,40 @@ function renderIndexes(): HTMLElement {
   return wrap;
 }
 
+function indexBadge(text: string, tone: 'neutral' | 'success'): HTMLElement {
+  return el('span', { className: `mc-index-badge ${tone}`, text });
+}
+
+function indexType(index: IndexInfo): string {
+  const directions = Object.values(index.key ?? {});
+  if (directions.includes('text')) return 'TEXT';
+  if (directions.includes('2d')) return '2D';
+  if (directions.includes('2dsphere')) return '2DSPHERE';
+  if (directions.includes('hashed')) return 'HASHED';
+  if (Object.keys(index.key ?? {}).some((field) => field === '$**' || field.endsWith('.$**'))) return 'WILDCARD';
+  return 'REGULAR';
+}
+
+function formatIndexKeys(keys: Record<string, unknown>): string {
+  return Object.entries(keys ?? {})
+    .map(([field, direction]) => `${field}: ${formatDirection(direction)}`)
+    .join(', ');
+}
+
 function formatDirection(direction: unknown): string {
-  if (direction === 1) return '1 (asc)';
-  if (direction === -1) return '-1 (desc)';
+  if (direction === 1) return 'ascending';
+  if (direction === -1) return 'descending';
   return String(direction);
+}
+
+function formatIndexUsage(accesses: IndexUsageStat['accesses'] | undefined): string {
+  if (!accesses) return 'Unavailable';
+  const sinceValue = typeof accesses.since === 'string' ? accesses.since : accesses.since?.$date;
+  const since = sinceValue ? new Date(sinceValue) : null;
+  const formattedSince = since && !Number.isNaN(since.getTime())
+    ? since.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: '2-digit', year: 'numeric' })
+    : 'unknown';
+  return `${formatNumber(accesses.ops ?? 0)} (since ${formattedSince})`;
 }
 
 async function dropIndex(name: string): Promise<void> {
@@ -664,7 +733,8 @@ function renderStats(): HTMLElement {
   return wrap;
 }
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number | undefined): string {
+  if (bytes === undefined) return '—';
   if (!bytes || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);

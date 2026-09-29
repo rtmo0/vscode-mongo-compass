@@ -293,6 +293,40 @@ export class DocumentsPanel extends BaseWebviewPanel {
       respond({ ok: true });
     });
 
+    this.registerHandler('indexes', async (_msg, respond) => {
+      const service = await this.service();
+      const [indexes, indexStatsResult, collectionStats] = await Promise.all([
+        service.listIndexes(this.state.namespace),
+        service.listIndexStats(this.state.namespace),
+        service.collectionStats(
+          this.state.namespace.database,
+          this.state.namespace.collection
+        ).catch(() => null)
+      ]);
+      respond({
+        indexes,
+        indexStats: indexStatsResult.stats,
+        indexStatsError: indexStatsResult.error,
+        indexSizes: collectionStats?.indexSizes ?? {}
+      });
+    });
+
+    this.registerHandler('createIndex', async (msg, respond) => {
+      const payload = msg.payload as { keys: Document; options: Document };
+      const service = await this.service();
+      const name = await service.createIndex(this.state.namespace, payload.keys, payload.options);
+      respond({ name });
+      await vscode.commands.executeCommand('mongoCompass.refreshExplorer');
+    });
+
+    this.registerHandler('dropIndex', async (msg, respond) => {
+      const payload = msg.payload as { name: string };
+      const service = await this.service();
+      const result = await service.dropIndex(this.state.namespace, payload.name);
+      respond(result);
+      await vscode.commands.executeCommand('mongoCompass.refreshExplorer');
+    });
+
     this.registerHandler('schemaFields', async (_msg, respond) => {
       const service = await this.service();
       const sample = await service

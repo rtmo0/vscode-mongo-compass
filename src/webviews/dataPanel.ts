@@ -145,11 +145,20 @@ export class DataPanel extends BaseWebviewPanel {
   private async loadIndexes(): Promise<unknown> {
     const service = await this.service();
     const ns = this.namespace();
-    const [indexes, searchIndexes] = await Promise.all([
+    const [indexes, searchIndexes, indexStatsResult, collectionStats] = await Promise.all([
       service.listIndexes(ns),
-      service.listSearchIndexes(ns)
+      service.listSearchIndexes(ns),
+      service.listIndexStats(ns),
+      service.collectionStats(ns.database, ns.collection).catch(() => null)
     ]);
-    return { namespace: ns.toString(), indexes, searchIndexes };
+    return {
+      namespace: ns.toString(),
+      indexes,
+      searchIndexes,
+      indexStats: indexStatsResult.stats,
+      indexStatsError: indexStatsResult.error,
+      indexSizes: collectionStats?.indexSizes ?? {}
+    };
   }
 
   private async loadSchema(query: Document = {}, sampleSize?: number): Promise<unknown> {

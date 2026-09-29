@@ -35,14 +35,37 @@ interface FindResult {
   query: QueryState;
 }
 
+interface IndexInfo {
+  name: string;
+  key: Record<string, unknown>;
+  unique?: boolean;
+  sparse?: boolean;
+  expireAfterSeconds?: number;
+  partialFilterExpression?: unknown;
+  collation?: unknown;
+  hidden?: boolean;
+}
+
+interface IndexesData {
+  indexes: IndexInfo[];
+  indexStats: Array<{
+    name?: string;
+    accesses?: { ops?: number; since?: string | { $date?: string } };
+  }>;
+  indexStatsError?: string;
+  indexSizes: Record<string, number>;
+}
+
 interface UiState {
   namespace: string;
+  activeSection: 'documents' | 'indexes';
   viewMode: 'list' | 'table' | 'json';
   query: QueryState;
   documents: string[];
   count: number | null;
   totalCount: number | null;
   elapsedMS: number;
+  indexes: IndexesData | null;
   loading: boolean;
   error: string | null;
 }
@@ -63,15 +86,19 @@ const DEFAULT_QUERY: QueryState = {
 
 let state: UiState = getState<UiState>({
   namespace: '—',
+  activeSection: 'documents',
   viewMode: 'list',
   query: DEFAULT_QUERY,
   documents: [],
   count: null,
   totalCount: null,
   elapsedMS: 0,
+  indexes: null,
   loading: false,
   error: null
 });
+state.activeSection ??= 'documents';
+state.indexes ??= null;
 
 // ───────────────────────────── element refs ─────────────────────────────
 
@@ -92,6 +119,9 @@ const paginationEl = $('pagination');
 const pageInfoEl = $('page-info');
 const modalRoot = $('modal-root');
 const bulkMenuEl = $('bulk-menu');
+const documentsToolbarEl = $('documents-toolbar');
+const indexesToolbarEl = $('indexes-toolbar');
+const documentsQuerybarEl = $('documents-querybar');
 
 // ───────────────────────────── init ─────────────────────────────
 
@@ -157,6 +187,10 @@ document.addEventListener('click', () => {
 $('btn-view-list').addEventListener('click', () => setViewMode('list'));
 $('btn-view-table').addEventListener('click', () => setViewMode('table'));
 $('btn-view-json').addEventListener('click', () => setViewMode('json'));
+$('tab-documents').addEventListener('click', () => switchSection('documents'));
+$('tab-indexes').addEventListener('click', () => switchSection('indexes'));
+$('btn-create-index').addEventListener('click', () => showCreateIndexModal());
+$('btn-indexes-refresh').addEventListener('click', () => void loadIndexes());
 
 $('toggle-options').addEventListener('click', () => {
   optionsEl.classList.toggle('collapsed');
@@ -249,14 +283,53 @@ function setViewMode(mode: 'list' | 'table' | 'json'): void {
   persist();
 }
 
+function switchSection(section: 'documents' | 'indexes'): void {
+  state.activeSection = section;
+  render();
+  persist();
+  if (section === 'indexes' && !state.indexes) {
+    void loadIndexes();
+  }
+}
+
+async function loadIndexes(): Promise<void> {
+  state.loading = true;
+  state.error = null;
+  render();
+  try {
+    state.indexes = await request<IndexesData>('indexes');
+  } catch (err) {
+    state.error = (err as Error).message;
+  } finally {
+    state.loading = false;
+    render();
+    persist();
+  }
+}
+
 // ───────────────────────────── rendering ─────────────────────────────
 
 function render(): void {
   namespaceEl.textContent = state.namespace;
+  $('indexes-namespace').textContent = state.namespace;
+  renderSectionTabs();
   renderViewButtons();
   renderStatus();
   renderContent();
   renderPagination();
+}
+
+function renderSectionTabs(): void {
+  const showingIndexes = state.activeSection === 'indexes';
+  documentsToolbarEl.hidden = showingIndexes;
+  documentsQuerybarEl.hidden = showingIndexes;
+  indexesToolbarEl.hidden = !showingIndexes;
+  for (const [id, section] of [['tab-documents', 'documents'], ['tab-indexes', 'indexes']] as const) {
+    const button = $(id);
+    const active = state.activeSection === section;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+  }
 }
 
 function renderViewButtons(): void {
@@ -281,6 +354,12 @@ function renderStatus(): void {
     statusTextEl.append(el('span', { className: 'error', text: state.error }));
     return;
   }
+  if (state.activeSection === 'indexes') {
+    statusTextEl.textContent = state.indexes
+      ? `${formatNumber(state.indexes.indexes.length)} indexes`
+      : 'Index information';
+    return;
+  }
   const parts: string[] = [];
   if (state.count !== null) {
     parts.push(`${formatNumber(state.count)} matched`);
@@ -300,8 +379,14 @@ function renderContent(): void {
 
   if (state.loading) {
     contentEl.append(
-      el('div', { className: 'mc-empty' }, el('span', { className: 'mc-spinner' }), 'Loading documents…')
+        el('div', { className: 'mc-empty' }, el('span', { className: 'mc-spinner' }),
+          state.activeSection === 'indexes' ? 'Loading indexes…' : 'Loading documents…')
     );
+    return;
+  }
+
+  if (state.activeSection === 'indexes') {
+    contentEl.append(renderIndexes());
     return;
   }
 
@@ -328,6 +413,257 @@ function renderContent(): void {
       contentEl.append(renderList());
       break;
   }
+}
+
+function renderIndexes(): HTMLElement {
+  const wrap = el('div', { className: 'mc-indexes-view' });
+  const data = state.indexes;
+  if (!data || data.indexes.length === 0) {
+    return el('div', { className: 'mc-empty', text: 'No indexes on this collection.' });
+  }
+
+  if (data.indexStatsError) {
+    wrap.append(
+      el('div', { className: 'mc-index-warning' },
+        el('strong', { text: 'Usage statistics unavailable: ' }),
+        data.indexStatsError
+      )
+    );
+  }
+
+  const usageByName = new Map(data.indexStats.map((stat) => [stat.name, stat.accesses]));
+  const scroll = el('div', { className: 'mc-index-table-scroll' });
+  const table = el('table', { className: 'mc-index-table' });
+  const head = el('tr');
+  for (const title of ['Name & Definition', 'Type', 'Size', 'Usage', 'Properties', 'Status', '']) {
+    head.append(el('th', {}, el('span', { text: title }), title ? el('span', { className: 'mc-index-sort', text: '↕' }) : ''));
+  }
+  const tbody = el('tbody');
+
+  for (const index of data.indexes) {
+    const row = el('tr');
+    const definition = el('details', { className: 'mc-index-definition' });
+    definition.append(
+      el('summary', {}, el('span', { className: 'mc-index-name', text: index.name })),
+      el('div', { className: 'mc-index-keys mc-mono', text: formatIndexKeys(index.key) })
+    );
+    row.append(el('td', {}, definition));
+    row.append(el('td', {}, indexBadge(indexType(index), 'neutral')));
+    row.append(el('td', { text: formatIndexBytes(data.indexSizes[index.name]) }));
+    const usage = formatIndexUsage(usageByName.get(index.name), data.indexStatsError);
+    row.append(el('td', { text: usage.text, title: usage.title }));
+
+    const properties = el('td', { className: 'mc-index-properties' });
+    const labels = indexProperties(index);
+    if (labels.length === 0) properties.textContent = '—';
+    for (const label of labels) properties.append(indexBadge(label, 'neutral'));
+    row.append(properties);
+    row.append(el('td', {}, indexBadge(index.hidden ? 'HIDDEN' : 'READY', index.hidden ? 'neutral' : 'success')));
+
+    const actions = el('td');
+    if (index.name !== '_id_') {
+      const drop = el('button', { className: 'mc-index-drop', text: '×', title: `Drop ${index.name}` });
+      drop.addEventListener('click', () => void dropEmbeddedIndex(index.name));
+      actions.append(drop);
+    }
+    row.append(actions);
+    tbody.append(row);
+  }
+
+  table.append(el('thead', {}, head), tbody);
+  scroll.append(table);
+  wrap.append(scroll);
+  return wrap;
+}
+
+function indexBadge(text: string, tone: 'neutral' | 'success'): HTMLElement {
+  return el('span', { className: `mc-index-badge ${tone}`, text });
+}
+
+function indexType(index: IndexInfo): string {
+  const values = Object.values(index.key ?? {});
+  if (values.includes('text')) return 'TEXT';
+  if (values.includes('2d')) return '2D';
+  if (values.includes('2dsphere')) return '2DSPHERE';
+  if (values.includes('hashed')) return 'HASHED';
+  if (Object.keys(index.key ?? {}).some((field) => field === '$**' || field.endsWith('.$**'))) return 'WILDCARD';
+  return 'REGULAR';
+}
+
+function indexProperties(index: IndexInfo): string[] {
+  const properties: string[] = [];
+  if (index.unique) properties.push('UNIQUE');
+  if (index.sparse) properties.push('SPARSE');
+  if (index.expireAfterSeconds !== undefined) properties.push(`TTL ${index.expireAfterSeconds}s`);
+  if (index.partialFilterExpression) properties.push('PARTIAL');
+  if (index.collation) properties.push('COLLATION');
+  if (index.hidden) properties.push('HIDDEN');
+  return properties;
+}
+
+function formatIndexKeys(keys: Record<string, unknown>): string {
+  return Object.entries(keys ?? {})
+    .map(([field, direction]) => `${field}: ${direction === 1 ? 'ascending' : direction === -1 ? 'descending' : String(direction)}`)
+    .join(', ');
+}
+
+function formatIndexBytes(bytes: number | undefined): string {
+  if (bytes === undefined) return '—';
+  if (bytes <= 0) return '0 B';
+  const units = ['B', 'kB', 'MB', 'GB', 'TB'];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** exponent;
+  return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+}
+
+function formatIndexUsage(
+  accesses: { ops?: number; since?: string | { $date?: string } } | undefined,
+  error?: string
+): { text: string; title: string } {
+  if (!accesses) {
+    return {
+      text: error ? 'Unavailable (hover for details)' : 'No usage data',
+      title: error ?? 'MongoDB returned no $indexStats entry for this index.'
+    };
+  }
+  const rawSince = typeof accesses.since === 'string' ? accesses.since : accesses.since?.$date;
+  const since = rawSince ? new Date(rawSince) : null;
+  const date = since && !Number.isNaN(since.getTime())
+    ? since.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: '2-digit', year: 'numeric' })
+    : 'unknown';
+  const text = `${formatNumber(accesses.ops ?? 0)} (since ${date})`;
+  return { text, title: text };
+}
+
+async function dropEmbeddedIndex(name: string): Promise<void> {
+  if (!window.confirm(`Drop index "${name}"?`)) return;
+  try {
+    await request('dropIndex', { name });
+    await loadIndexes();
+  } catch (err) {
+    state.error = (err as Error).message;
+    render();
+  }
+}
+
+function showCreateIndexModal(): void {
+  const body = el('div', { className: 'mc-create-index-form' });
+  const fields = el('div', { className: 'mc-index-field-list' });
+  const addField = (): void => fields.append(createIndexFieldRow(fields));
+  addField();
+
+  const addFieldButton = el('button', { className: 'mc-btn', text: '＋ Add field', type: 'button' });
+  addFieldButton.addEventListener('click', addField);
+
+  const nameInput = createFormInput('Index name (optional)', 'MongoDB will generate a name');
+  const uniqueInput = createCheckbox('Create unique index');
+  const sparseInput = createCheckbox('Create sparse index');
+  const ttlInput = createFormInput('TTL seconds (optional)', 'e.g. 3600', 'number');
+  const partialInput = createFormTextarea('Partial Filter Expression (optional)', '{\n  \n}');
+  const wildcardInput = createFormTextarea('Wildcard Projection (optional)', '{\n  \n}');
+  const collationInput = createFormTextarea('Custom Collation (optional)', '{\n  "locale": "en"\n}');
+
+  body.append(
+    el('div', { className: 'mc-section-title', text: state.namespace }),
+    el('label', { className: 'mc-index-form-label', text: 'Index fields' }),
+    fields,
+    addFieldButton,
+    el('div', { className: 'mc-index-options-title', text: 'Options' }),
+    uniqueInput.wrap,
+    sparseInput.wrap,
+    nameInput.wrap,
+    ttlInput.wrap,
+    partialInput.wrap,
+    wildcardInput.wrap,
+    collationInput.wrap
+  );
+
+  openModal({
+    title: 'Create Index',
+    body,
+    primaryLabel: 'Create Index',
+    onPrimary: async () => {
+      const keys: Record<string, unknown> = {};
+      for (const row of Array.from(fields.querySelectorAll('.mc-index-field-row'))) {
+        const field = (row.querySelector('.mc-index-field-name') as HTMLInputElement | null)?.value.trim() ?? '';
+        const type = (row.querySelector('.mc-index-field-type') as HTMLSelectElement | null)?.value ?? '1';
+        if (!field) {
+          showFieldError('Every index field must have a name.');
+          return;
+        }
+        keys[field] = type === '1' || type === '-1' ? Number(type) : type;
+      }
+
+      if (Object.keys(keys).length === 0) {
+        showFieldError('Add at least one index field.');
+        return;
+      }
+
+      try {
+        const options: Record<string, unknown> = {};
+        if (nameInput.input.value.trim()) options.name = nameInput.input.value.trim();
+        if (uniqueInput.input.checked) options.unique = true;
+        if (sparseInput.input.checked) options.sparse = true;
+        if (ttlInput.input.value.trim()) options.expireAfterSeconds = Number(ttlInput.input.value);
+        addJsonOption(options, 'partialFilterExpression', partialInput.input.value);
+        addJsonOption(options, 'wildcardProjection', wildcardInput.input.value);
+        addJsonOption(options, 'collation', collationInput.input.value);
+
+        const result = await request<{ name: string }>('createIndex', { keys, options });
+        closeModal();
+        await loadIndexes();
+        setStatusMessage(`Index "${result.name}" created.`);
+      } catch (err) {
+        showFieldError((err as Error).message);
+      }
+    }
+  });
+}
+
+function createIndexFieldRow(container: HTMLElement): HTMLElement {
+  const row = el('div', { className: 'mc-index-field-row' });
+  const field = el('input', {
+    className: 'mc-input mc-index-field-name',
+    placeholder: 'Select or type a field name'
+  }) as HTMLInputElement;
+  const type = el('select', { className: 'mc-select mc-index-field-type' }) as HTMLSelectElement;
+  for (const [value, label] of [
+    ['1', 'Ascending'], ['-1', 'Descending'], ['text', 'Text'],
+    ['hashed', 'Hashed'], ['2dsphere', '2dsphere'], ['2d', '2d']
+  ]) {
+    type.append(el('option', { value, text: label }));
+  }
+  const remove = el('button', { className: 'mc-index-remove-field', text: '×', title: 'Remove field', type: 'button' });
+  remove.addEventListener('click', () => {
+    if (container.children.length > 1) row.remove();
+  });
+  row.append(field, type, remove);
+  return row;
+}
+
+function createFormInput(label: string, placeholder: string, type = 'text'): { wrap: HTMLElement; input: HTMLInputElement } {
+  const input = el('input', { className: 'mc-input', placeholder, type }) as HTMLInputElement;
+  const wrap = el('label', { className: 'mc-index-form-control' }, el('span', { text: label }), input);
+  return { wrap, input };
+}
+
+function createFormTextarea(label: string, value: string): { wrap: HTMLElement; input: HTMLTextAreaElement } {
+  const input = el('textarea', { className: 'mc-textarea', rows: 4 }) as HTMLTextAreaElement;
+  input.value = value;
+  const wrap = el('label', { className: 'mc-index-form-control' }, el('span', { text: label }), input);
+  return { wrap, input };
+}
+
+function createCheckbox(label: string): { wrap: HTMLElement; input: HTMLInputElement } {
+  const input = el('input', { type: 'checkbox' }) as HTMLInputElement;
+  const wrap = el('label', { className: 'mc-index-checkbox' }, input, el('span', { text: label }));
+  return { wrap, input };
+}
+
+function addJsonOption(options: Record<string, unknown>, key: string, source: string): void {
+  const trimmed = source.trim();
+  if (!trimmed || trimmed === '{}') return;
+  options[key] = JSON.parse(trimmed);
 }
 
 function parsedDocuments(): Array<Record<string, unknown>> {
@@ -535,6 +871,10 @@ function renderJsonValue(value: unknown, depth: number, expanded = false): HTMLE
 }
 
 function renderPagination(): void {
+  if (state.activeSection === 'indexes') {
+    paginationEl.style.display = 'none';
+    return;
+  }
   if (state.documents.length === 0 && state.count === null) {
     paginationEl.style.display = 'none';
     return;

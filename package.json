@@ -4,6 +4,7 @@
   "description": "MongoDB GUI inside VS Code: connections, documents CRUD, query bar, aggregation pipeline builder, indexes, schema analysis, explain plans, import/export and server stats. Feature set inspired by MongoDB Compass.",
   "version": "0.1.0",
   "publisher": "mongo-compass",
+  "icon": "resources/mongodb.png",
   "license": "MIT",
   "repository": {
     "type": "git",

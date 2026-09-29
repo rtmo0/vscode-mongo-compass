@@ -11,7 +11,12 @@
   </head>
   <body>
     <div id="app">
-      <div class="mc-toolbar">
+      <div class="mc-collection-tabs" role="tablist" aria-label="Collection views">
+        <button class="mc-collection-tab active" id="tab-documents" role="tab" aria-selected="true">Documents</button>
+        <button class="mc-collection-tab" id="tab-indexes" role="tab" aria-selected="false">Indexes</button>
+      </div>
+
+      <div class="mc-toolbar" id="documents-toolbar">
         <span class="mc-namespace" id="namespace">—</span>
         <button class="mc-btn primary" id="btn-find" title="Find (Enter)">▶ Find</button>
         <button class="mc-btn" id="btn-cancel" title="Cancel running query">■ Cancel</button>
@@ -33,7 +38,13 @@
         <button class="mc-btn" id="btn-agg" title="Open aggregation builder">Aggregation</button>
       </div>
 
-      <div class="mc-querybar">
+      <div class="mc-toolbar" id="indexes-toolbar" hidden>
+        <span class="mc-namespace" id="indexes-namespace">—</span>
+        <button class="mc-btn primary" id="btn-create-index" title="Create index">＋ Create Index</button>
+        <button class="mc-btn" id="btn-indexes-refresh" title="Refresh index statistics">⟳ Refresh</button>
+      </div>
+
+      <div class="mc-querybar" id="documents-querybar">
         <div class="mc-querybar-row">
           <input
             class="mc-input filter-input"

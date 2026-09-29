@@ -29,6 +29,40 @@ body {
   height: 100vh;
 }
 
+.mc-collection-tabs {
+  display: flex;
+  gap: 24px;
+  min-height: 40px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+}
+
+.mc-collection-tab {
+  position: relative;
+  padding: 0 4px;
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.mc-collection-tab.active {
+  color: var(--vscode-foreground);
+}
+
+.mc-collection-tab.active::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: var(--vscode-focusBorder);
+}
+
 /* ── toolbar ── */
 
 .mc-toolbar {
@@ -379,6 +413,191 @@ body {
 
 .mc-table tr:hover td {
   background: var(--vscode-list-hoverBackground);
+}
+
+/* ── indexes ── */
+
+.mc-indexes-view {
+  min-width: 100%;
+}
+
+.mc-index-table-scroll {
+  width: 100%;
+  overflow: auto;
+}
+
+.mc-index-table {
+  width: 100%;
+  min-width: 1040px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.mc-index-table th {
+  padding: 12px 16px;
+  border-bottom: 3px solid var(--vscode-panel-border);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  text-align: left;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.mc-index-table td {
+  height: 58px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.mc-index-table tbody tr:hover td {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.mc-index-sort {
+  margin-left: 10px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 16px;
+}
+
+.mc-index-definition summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.mc-index-definition summary::-webkit-details-marker {
+  display: none;
+}
+
+.mc-index-definition summary::before {
+  content: '›';
+  color: var(--vscode-foreground);
+  font-size: 28px;
+  line-height: 16px;
+  transform-origin: center;
+}
+
+.mc-index-definition[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.mc-index-name {
+  font-size: 14px;
+}
+
+.mc-index-keys {
+  margin: 10px 0 2px 28px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.mc-index-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 10px;
+  border: 1px solid var(--vscode-contrastBorder, transparent);
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.mc-index-badge.neutral {
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+}
+
+.mc-index-badge.success {
+  border-color: var(--vscode-testing-iconPassed, #2ea043);
+  color: var(--vscode-testing-iconPassed, #3fb950);
+  background: color-mix(in srgb, var(--vscode-testing-iconPassed, #2ea043) 12%, transparent);
+}
+
+.mc-index-properties {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mc-index-drop {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.mc-index-drop:hover {
+  color: var(--vscode-errorForeground);
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.mc-index-warning {
+  margin: 8px 0 12px;
+  padding: 9px 12px;
+  border-left: 3px solid var(--vscode-editorWarning-foreground);
+  color: var(--vscode-foreground);
+  background: var(--vscode-inputValidation-warningBackground);
+  white-space: normal;
+}
+
+.mc-create-index-form {
+  display: grid;
+  gap: 12px;
+  min-width: min(620px, 80vw);
+}
+
+.mc-index-field-list {
+  display: grid;
+  gap: 7px;
+}
+
+.mc-index-field-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(150px, 0.6fr) 30px;
+  gap: 8px;
+}
+
+.mc-index-remove-field {
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.mc-index-form-label,
+.mc-index-options-title,
+.mc-index-form-control > span {
+  font-weight: 600;
+}
+
+.mc-index-options-title {
+  padding-top: 5px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.mc-index-form-control {
+  display: grid;
+  gap: 5px;
+}
+
+.mc-index-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
 }
 
 .mc-doc-grid td:first-child,
