@@ -1,0 +1,422 @@
+import * as vscode from 'vscode';
+import { EJSON, ObjectId, type Document } from 'bson';
+import { BaseWebviewPanel } from './baseWebview';
+import { DataService, Namespace } from '../core/dataService';
+import type { ConnectionManager } from '../core/connectionManager';
+import type { QueryHistoryStore } from '../core/queryHistory';
+import type { MyQueriesStore } from '../core/myQueries';
+import { parseShellBSON, parseSort, parseNumberOption } from '../core/bsonParser';
+import { getConfig } from '../core/config';
+import { logger } from '../core/logger';
+import type { QueryState } from '../core/types';
+
+interface DocumentsPanelState {
+  connectionId: string;
+  namespace: Namespace;
+  query: QueryState;
+  viewMode: 'list' | 'table' | 'json';
+}
+
+/**
+ * Documents tab — the equivalent of Compass' `compass-crud` plugin:
+ * query bar (filter/project/sort/collation/skip/limit/maxTimeMS),
+ * list/table/json views, pagination, insert/edit/delete/clone,
+ * explain, export-to-language, save query.
+ */
+export class DocumentsPanel extends BaseWebviewPanel {
+  protected get panelKey(): string {
+    return `documents:${this.state.connectionId}:${this.state.namespace.toString()}`;
+  }
+
+  protected get title(): string {
+    return `Documents — ${this.state.namespace.toString()}`;
+  }
+
+  protected get webviewName(): string {
+    return 'documents';
+  }
+
+  private state: DocumentsPanelState;
+  private abortController: AbortController | undefined;
+
+  static open(
+    extensionUri: vscode.Uri,
+    connectionManager: ConnectionManager,
+    history: QueryHistoryStore,
+    myQueries: MyQueriesStore,
+    connectionId: string,
+    namespace: Namespace,
+    initialQuery?: Partial<QueryState>,
+    viewColumn = vscode.ViewColumn.Active
+  ): DocumentsPanel {
+    return new DocumentsPanel(
+      extensionUri,
+      connectionManager,
+      history,
+      myQueries,
+      connectionId,
+      namespace,
+      initialQuery,
+      viewColumn
+    );
+  }
+
+  private constructor(
+    extensionUri: vscode.Uri,
+    private readonly connectionManager: ConnectionManager,
+    private readonly history: QueryHistoryStore,
+    private readonly myQueries: MyQueriesStore,
+    connectionId: string,
+    namespace: Namespace,
+    initialQuery: Partial<QueryState> | undefined,
+    viewColumn: vscode.ViewColumn
+  ) {
+    super(extensionUri);
+
+    const config = getConfig();
+    this.state = {
+      connectionId,
+      namespace,
+      viewMode: config.resultView,
+      query: {
+        filter: {},
+        filterText: '',
+        project: {},
+        projectText: '',
+        sort: {},
+        sortText: '',
+        collation: null,
+        collationText: '',
+        skip: 0,
+        limit: config.defaultLimit,
+        maxTimeMS: config.maxTimeMS,
+        ...initialQuery
+      }
+    };
+
+    this.initializePanel(viewColumn);
+    this.registerHandlers();
+    this.post('init', {
+      namespace: namespace.toString(),
+      database: namespace.database,
+      collection: namespace.collection,
+      connectionId,
+      query: this.state.query,
+      viewMode: this.state.viewMode,
+      config: {
+        defaultLimit: config.defaultLimit,
+        maxTimeMS: config.maxTimeMS
+      }
+    });
+  }
+
+  protected override onPanelReused(): void {
+    this.post('init', {
+      namespace: this.state.namespace.toString(),
+      database: this.state.namespace.database,
+      collection: this.state.namespace.collection,
+      connectionId: this.state.connectionId,
+      query: this.state.query,
+      viewMode: this.state.viewMode
+    });
+  }
+
+  private async service(): Promise<DataService> {
+    const connection = await this.connectionManager.requireClient(this.state.connectionId);
+    return new DataService(connection.client, connection.options.id);
+  }
+
+  private registerHandlers(): void {
+    this.registerHandler('ready', (_msg, respond) => {
+      respond({
+        namespace: this.state.namespace.toString(),
+        query: this.state.query,
+        viewMode: this.state.viewMode
+      });
+    });
+
+    this.registerHandler('find', async (msg, respond) => {
+      const payload = msg.payload as { query: QueryState };
+      this.state.query = normalizeQuery(payload.query);
+      await this.runFind(respond);
+    });
+
+    this.registerHandler('cancel', () => {
+      this.abortController?.abort();
+    });
+
+    this.registerHandler('count', async (_msg, respond) => {
+      const service = await this.service();
+      const count = await service.countDocuments(this.state.namespace, this.state.query.filter);
+      respond({ count });
+    });
+
+    this.registerHandler('insert', async (msg, respond) => {
+      const payload = msg.payload as { documentText: string };
+      const doc = parseShellBSON(payload.documentText);
+      const service = await this.service();
+      const insertedId = await service.insertOne(this.state.namespace, doc);
+      respond({ insertedId });
+      this.post('refresh');
+    });
+
+    this.registerHandler('update', async (msg, respond) => {
+      const payload = msg.payload as { filterText: string; documentText: string };
+      const filter = parseShellBSON(payload.filterText);
+      const replacement = parseShellBSON(payload.documentText);
+      const service = await this.service();
+      const result = await service.replaceOne(this.state.namespace, filter, replacement);
+      respond(result);
+      this.post('refresh');
+    });
+
+    this.registerHandler('bulkUpdate', async (msg, respond) => {
+      const payload = msg.payload as { filterText: string; updateText: string };
+      const filter = parseShellBSON(payload.filterText);
+      const update = parseShellBSON(payload.updateText);
+      const service = await this.service();
+      const result = await service.updateMany(this.state.namespace, filter, update);
+      respond(result);
+      this.post('refresh');
+    });
+
+    this.registerHandler('bulkCount', async (msg, respond) => {
+      const payload = msg.payload as { filterText: string };
+      const filter = parseShellBSON(payload.filterText);
+      const service = await this.service();
+      const count = await service.countDocuments(this.state.namespace, filter);
+      respond({ count });
+    });
+
+    this.registerHandler('bulkDelete', async (msg, respond) => {
+      const payload = msg.payload as { filterText: string };
+      const filter = parseShellBSON(payload.filterText);
+      const service = await this.service();
+      const deleted = await service.deleteMany(this.state.namespace, filter);
+      respond({ deleted });
+      this.post('refresh');
+    });
+
+    this.registerHandler('delete', async (msg, respond) => {
+      const payload = msg.payload as { filterText: string; many?: boolean };
+      const filter = parseShellBSON(payload.filterText);
+      const service = await this.service();
+      const deleted = payload.many
+        ? await service.deleteMany(this.state.namespace, filter)
+        : await service.deleteOne(this.state.namespace, filter);
+      respond({ deleted });
+      this.post('refresh');
+    });
+
+    this.registerHandler('clone', async (msg, respond) => {
+      const payload = msg.payload as { filterText: string };
+      const filter = parseShellBSON(payload.filterText);
+      const service = await this.service();
+      const doc = await service.findOne(this.state.namespace, filter);
+      if (!doc) {
+        throw new Error('Document not found');
+      }
+      const clone = { ...doc } as Document;
+      delete clone._id;
+      const insertedId = await service.insertOne(this.state.namespace, clone);
+      respond({ insertedId });
+      this.post('refresh');
+    });
+
+    this.registerHandler('explain', async (_msg, respond) => {
+      const service = await this.service();
+      const explain = await service.explainFind(this.state.namespace, this.state.query);
+      this.history.add({
+        connectionId: this.state.connectionId,
+        connectionName: this.connectionName(),
+        database: this.state.namespace.database,
+        collection: this.state.namespace.collection,
+        kind: 'explain',
+        text: EJSON.stringify(this.state.query.filter),
+        query: this.state.query,
+        status: 'success',
+        elapsedMS: explain.elapsedMS
+      });
+      respond(explain);
+    });
+
+    this.registerHandler('saveQuery', async (msg, respond) => {
+      const payload = msg.payload as { name: string };
+      const saved = await this.myQueries.saveQuery({
+        name: payload.name,
+        connectionId: this.state.connectionId,
+        database: this.state.namespace.database,
+        collection: this.state.namespace.collection,
+        query: this.state.query
+      });
+      respond(saved);
+      void vscode.window.showInformationMessage(`Query "${saved.name}" saved to My Queries.`);
+    });
+
+    this.registerHandler('setViewMode', (msg, respond) => {
+      const payload = msg.payload as { mode: 'list' | 'table' | 'json' };
+      this.state.viewMode = payload.mode;
+      respond({ ok: true });
+    });
+
+    this.registerHandler('exportToLanguage', async (msg, respond) => {
+      const payload = msg.payload as { language: string };
+      const { exportToLanguage } = await import('../core/exportToLanguage');
+      const connection = this.connectionManager.get(this.state.connectionId);
+      const code = exportToLanguage(payload.language as never, {
+        database: this.state.namespace.database,
+        collection: this.state.namespace.collection,
+        query: this.state.query,
+        connectionString: connection?.options.connectionString
+      });
+      respond({ code });
+    });
+
+    this.registerHandler('copyShellSnippet', async (_msg, respond) => {
+      const { exportToLanguage } = await import('../core/exportToLanguage');
+      const code = exportToLanguage('shell', {
+        database: this.state.namespace.database,
+        collection: this.state.namespace.collection,
+        query: this.state.query
+      });
+      await vscode.env.clipboard.writeText(code);
+      respond({ ok: true });
+    });
+
+    this.registerHandler('openAggregation', async (_msg, respond) => {
+      await vscode.commands.executeCommand(
+        'mongoCompass.openAggregation',
+        this.state.connectionId,
+        this.state.namespace.database,
+        this.state.namespace.collection
+      );
+      respond({ ok: true });
+    });
+
+    this.registerHandler('schemaFields', async (_msg, respond) => {
+      const service = await this.service();
+      const sample = await service
+        .collection(this.state.namespace)
+        .find({}, { limit: 100 })
+        .toArray();
+      const fields = new Set<string>();
+      for (const doc of sample) {
+        collectPaths(doc, '', fields);
+      }
+      respond({ fields: [...fields].sort() });
+    });
+  }
+
+  private connectionName(): string {
+    return (
+      this.connectionManager.get(this.state.connectionId)?.options.name ??
+      this.state.connectionId
+    );
+  }
+
+  private async runFind(respond: (payload: unknown) => void): Promise<void> {
+    const started = Date.now();
+    this.abortController?.abort();
+    this.abortController = new AbortController();
+
+    try {
+      logger.info('Documents query received', {
+        ns: this.state.namespace.toString(),
+        limit: this.state.query.limit,
+        skip: this.state.query.skip,
+        maxTimeMS: this.state.query.maxTimeMS
+      });
+      const service = await this.service();
+      const result = await service.find(this.state.namespace, this.state.query, {
+        maxTimeMS: this.state.query.maxTimeMS,
+        signal: this.abortController.signal
+      });
+
+      this.history.add({
+        connectionId: this.state.connectionId,
+        connectionName: this.connectionName(),
+        database: this.state.namespace.database,
+        collection: this.state.namespace.collection,
+        kind: 'find',
+        text: EJSON.stringify(this.state.query.filter),
+        query: this.state.query,
+        status: 'success',
+        count: result.count,
+        elapsedMS: Date.now() - started
+      });
+
+      const documents = serialiseDocuments(result.documents);
+      logger.info('Documents response ready', {
+        ns: this.state.namespace.toString(),
+        documents: documents.length,
+        bytes: documents.reduce((total, document) => total + document.length, 0)
+      });
+      respond({
+        documents,
+        count: result.count,
+        totalCount: result.totalCount,
+        elapsedMS: result.elapsedMS,
+        query: this.state.query
+      });
+    } catch (err) {
+      const error = err as Error;
+      if (error.name === 'MongoOperationTimeoutError' || this.abortController?.signal.aborted) {
+        logger.warn('Query aborted', { ns: this.state.namespace.toString() });
+        respond({ documents: [], count: null, totalCount: null, elapsedMS: 0, aborted: true });
+        return;
+      }
+      this.history.add({
+        connectionId: this.state.connectionId,
+        connectionName: this.connectionName(),
+        database: this.state.namespace.database,
+        collection: this.state.namespace.collection,
+        kind: 'find',
+        text: EJSON.stringify(this.state.query.filter),
+        query: this.state.query,
+        status: 'error',
+        error: error.message,
+        elapsedMS: Date.now() - started
+      });
+      throw err;
+    }
+  }
+}
+
+function normalizeQuery(query: QueryState): QueryState {
+  const config = getConfig();
+  const filterText = query.filterText?.trim() ?? '';
+  const projectText = query.projectText?.trim() ?? '';
+  const sortText = query.sortText?.trim() ?? '';
+  const collationText = query.collationText?.trim() ?? '';
+  return {
+    filter: filterText ? parseShellBSON(filterText) : query.filter ?? {},
+    filterText,
+    project: projectText ? parseShellBSON(projectText) : {},
+    projectText,
+    sort: sortText ? parseSort(sortText) : {},
+    sortText,
+    collation: collationText ? parseShellBSON(collationText) : null,
+    collationText,
+    skip: parseNumberOption(query.skip, 0),
+    limit: parseNumberOption(query.limit, config.defaultLimit),
+    maxTimeMS: parseNumberOption(query.maxTimeMS, config.maxTimeMS)
+  };
+}
+
+function serialiseDocuments(documents: Document[]): string[] {
+  return documents.map((doc) =>
+    EJSON.stringify(doc, undefined, 2, { relaxed: true })
+  );
+}
+
+function collectPaths(doc: Document, prefix: string, out: Set<string>): void {
+  for (const [key, value] of Object.entries(doc)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    out.add(path);
+    if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof ObjectId) && !(value instanceof Date)) {
+      collectPaths(value as Document, path, out);
+    }
+  }
+}
+
+export type { DocumentsPanelState };

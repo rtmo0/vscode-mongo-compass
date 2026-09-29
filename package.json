@@ -1,0 +1,611 @@
+{
+  "name": "mongo-compass",
+  "displayName": "MongoDB Compass for VS Code",
+  "description": "MongoDB GUI inside VS Code: connections, documents CRUD, query bar, aggregation pipeline builder, indexes, schema analysis, explain plans, import/export and server stats. Feature set inspired by MongoDB Compass.",
+  "version": "0.1.0",
+  "publisher": "mongo-compass",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rtmo0/vscode-mongo-compass.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Data Science",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "mongodb",
+    "mongo",
+    "compass",
+    "database",
+    "nosql",
+    "aggregation",
+    "atlas"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mongoCompass",
+          "title": "MongoDB",
+          "icon": "resources/mongodb.svg"
+        }
+      ]
+    },
+    "views": {
+      "mongoCompass": [
+        {
+          "id": "mongoCompass.explorer",
+          "name": "Connections",
+          "icon": "resources/mongodb.svg",
+          "contextualTitle": "MongoDB"
+        },
+        {
+          "id": "mongoCompass.tools",
+          "name": "Tools",
+          "icon": "resources/tools.svg",
+          "contextualTitle": "MongoDB"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "mongoCompass.explorer",
+        "contents": "No MongoDB connections yet.\n[Add Connection](command:mongoCompass.addConnection)\n[Connect with URI…](command:mongoCompass.connectWithUri)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "mongoCompass.addConnection",
+        "title": "Add Connection",
+        "category": "MongoDB",
+        "icon": "$(add)"
+      },
+      {
+        "command": "mongoCompass.connectWithUri",
+        "title": "Connect with Connection URI…",
+        "category": "MongoDB",
+        "icon": "$(link)"
+      },
+      {
+        "command": "mongoCompass.connect",
+        "title": "Connect",
+        "category": "MongoDB",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "mongoCompass.disconnect",
+        "title": "Disconnect",
+        "category": "MongoDB",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "mongoCompass.editConnection",
+        "title": "Edit Connection…",
+        "category": "MongoDB",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "mongoCompass.removeConnection",
+        "title": "Remove Connection",
+        "category": "MongoDB",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "mongoCompass.duplicateConnection",
+        "title": "Duplicate Connection",
+        "category": "MongoDB",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "mongoCompass.copyConnectionString",
+        "title": "Copy Connection String",
+        "category": "MongoDB",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "mongoCompass.refreshExplorer",
+        "title": "Refresh",
+        "category": "MongoDB",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mongoCompass.refreshNode",
+        "title": "Refresh",
+        "category": "MongoDB",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mongoCompass.createDatabase",
+        "title": "Create Database…",
+        "category": "MongoDB",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "mongoCompass.dropDatabase",
+        "title": "Drop Database…",
+        "category": "MongoDB",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "mongoCompass.showDatabaseStats",
+        "title": "Database Stats",
+        "category": "MongoDB",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "mongoCompass.createCollection",
+        "title": "Create Collection…",
+        "category": "MongoDB",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "mongoCompass.createView",
+        "title": "Create View…",
+        "category": "MongoDB",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "mongoCompass.dropCollection",
+        "title": "Drop Collection…",
+        "category": "MongoDB",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "mongoCompass.renameCollection",
+        "title": "Rename Collection…",
+        "category": "MongoDB",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "mongoCompass.duplicateCollection",
+        "title": "Duplicate Collection…",
+        "category": "MongoDB",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "mongoCompass.showCollectionStats",
+        "title": "Collection Stats",
+        "category": "MongoDB",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "mongoCompass.copyNamespace",
+        "title": "Copy Namespace",
+        "category": "MongoDB",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "mongoCompass.openDocuments",
+        "title": "Browse Documents",
+        "category": "MongoDB",
+        "icon": "$(json)"
+      },
+      {
+        "command": "mongoCompass.openAggregation",
+        "title": "Aggregation Pipeline Builder",
+        "category": "MongoDB",
+        "icon": "$(run-all)"
+      },
+      {
+        "command": "mongoCompass.openIndexes",
+        "title": "Indexes",
+        "category": "MongoDB",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "mongoCompass.openSchema",
+        "title": "Analyze Schema",
+        "category": "MongoDB",
+        "icon": "$(symbol-structure)"
+      },
+      {
+        "command": "mongoCompass.openValidation",
+        "title": "Validation Rules",
+        "category": "MongoDB",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "mongoCompass.exportCollection",
+        "title": "Export Collection…",
+        "category": "MongoDB",
+        "icon": "$(export)"
+      },
+      {
+        "command": "mongoCompass.importCollection",
+        "title": "Import Data…",
+        "category": "MongoDB",
+        "icon": "$(import)"
+      },
+      {
+        "command": "mongoCompass.insertDocument",
+        "title": "Insert Document…",
+        "category": "MongoDB",
+        "icon": "$(add)"
+      },
+      {
+        "command": "mongoCompass.createIndex",
+        "title": "Create Index…",
+        "category": "MongoDB",
+        "icon": "$(add)"
+      },
+      {
+        "command": "mongoCompass.dropIndex",
+        "title": "Drop Index…",
+        "category": "MongoDB",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "mongoCompass.explainQuery",
+        "title": "Explain Query…",
+        "category": "MongoDB",
+        "icon": "$(search-fuzzy)"
+      },
+      {
+        "command": "mongoCompass.showServerStatus",
+        "title": "Server Status",
+        "category": "MongoDB",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "mongoCompass.showCurrentOp",
+        "title": "Current Operations",
+        "category": "MongoDB",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "mongoCompass.showQueryHistory",
+        "title": "Query History",
+        "category": "MongoDB",
+        "icon": "$(history)"
+      },
+      {
+        "command": "mongoCompass.clearQueryHistory",
+        "title": "Clear Query History",
+        "category": "MongoDB",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "mongoCompass.showSavedQueries",
+        "title": "My Queries (Saved Queries & Pipelines)",
+        "category": "MongoDB",
+        "icon": "$(star)"
+      },
+      {
+        "command": "mongoCompass.exportToLanguage",
+        "title": "Export Query To Language…",
+        "category": "MongoDB",
+        "icon": "$(code)"
+      },
+      {
+        "command": "mongoCompass.openShellSnippet",
+        "title": "Copy as mongosh Snippet",
+        "category": "MongoDB",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "mongoCompass.runCommand",
+        "title": "Run Database Command…",
+        "category": "MongoDB",
+        "icon": "$(terminal-cmd)"
+      },
+      {
+        "command": "mongoCompass.killOp",
+        "title": "Kill Operation",
+        "category": "MongoDB",
+        "icon": "$(close)"
+      },
+      {
+        "command": "mongoCompass.showLogs",
+        "title": "Show Output Channel",
+        "category": "MongoDB",
+        "icon": "$(output)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "mongoCompass.addConnection",
+          "when": "view == mongoCompass.explorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mongoCompass.refreshExplorer",
+          "when": "view == mongoCompass.explorer",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mongoCompass.showQueryHistory",
+          "when": "view == mongoCompass.tools",
+          "group": "navigation@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "mongoCompass.connect",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^connection\\.(disconnected|error)/",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.disconnect",
+          "when": "view == mongoCompass.explorer && viewItem == connection.connected",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.refreshNode",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^(connection\\.connected|database|collections|indexes)/",
+          "group": "inline@2"
+        },
+        {
+          "command": "mongoCompass.editConnection",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^connection\\./",
+          "group": "1_connection@1"
+        },
+        {
+          "command": "mongoCompass.duplicateConnection",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^connection\\./",
+          "group": "1_connection@2"
+        },
+        {
+          "command": "mongoCompass.copyConnectionString",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^connection\\./",
+          "group": "1_connection@3"
+        },
+        {
+          "command": "mongoCompass.removeConnection",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^connection\\./",
+          "group": "9_danger@1"
+        },
+        {
+          "command": "mongoCompass.createDatabase",
+          "when": "view == mongoCompass.explorer && viewItem == connection.connected",
+          "group": "2_create@1"
+        },
+        {
+          "command": "mongoCompass.dropDatabase",
+          "when": "view == mongoCompass.explorer && viewItem == database",
+          "group": "9_danger@1"
+        },
+        {
+          "command": "mongoCompass.showDatabaseStats",
+          "when": "view == mongoCompass.explorer && viewItem == database",
+          "group": "3_stats@1"
+        },
+        {
+          "command": "mongoCompass.runCommand",
+          "when": "view == mongoCompass.explorer && viewItem == database",
+          "group": "3_stats@2"
+        },
+        {
+          "command": "mongoCompass.createCollection",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^(database|collections)/",
+          "group": "2_create@1"
+        },
+        {
+          "command": "mongoCompass.createView",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^(database|collections)/",
+          "group": "2_create@2"
+        },
+        {
+          "command": "mongoCompass.openDocuments",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.openAggregation",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "1_open@2"
+        },
+        {
+          "command": "mongoCompass.openIndexes",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "1_open@3"
+        },
+        {
+          "command": "mongoCompass.openSchema",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "1_open@4"
+        },
+        {
+          "command": "mongoCompass.openValidation",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "1_open@5"
+        },
+        {
+          "command": "mongoCompass.explainQuery",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "1_open@6"
+        },
+        {
+          "command": "mongoCompass.insertDocument",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "2_create@1"
+        },
+        {
+          "command": "mongoCompass.exportCollection",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "4_data@1"
+        },
+        {
+          "command": "mongoCompass.importCollection",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^(collection|database|collections)/",
+          "group": "4_data@2"
+        },
+        {
+          "command": "mongoCompass.duplicateCollection",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "4_data@3"
+        },
+        {
+          "command": "mongoCompass.showCollectionStats",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "5_stats@1"
+        },
+        {
+          "command": "mongoCompass.copyNamespace",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "5_stats@2"
+        },
+        {
+          "command": "mongoCompass.renameCollection",
+          "when": "view == mongoCompass.explorer && viewItem == collection",
+          "group": "6_modify@1"
+        },
+        {
+          "command": "mongoCompass.dropCollection",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
+          "group": "9_danger@1"
+        },
+        {
+          "command": "mongoCompass.createIndex",
+          "when": "view == mongoCompass.explorer && viewItem == indexes",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.dropIndex",
+          "when": "view == mongoCompass.explorer && viewItem == index",
+          "group": "inline@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "mongoCompass.refreshNode",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.connect",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.disconnect",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.killOp",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.dropIndex",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "MongoDB Compass",
+      "properties": {
+        "mongoCompass.defaultLimit": {
+          "type": "number",
+          "default": 20,
+          "description": "Default page size (limit) used by the documents view and query bar."
+        },
+        "mongoCompass.maxTimeMS": {
+          "type": "number",
+          "default": 60000,
+          "description": "Maximum time in milliseconds the server should spend on a query or aggregation."
+        },
+        "mongoCompass.resultView": {
+          "type": "string",
+          "enum": [
+            "list",
+            "table",
+            "json"
+          ],
+          "default": "list",
+          "description": "Default documents view mode."
+        },
+        "mongoCompass.schemaSampleSize": {
+          "type": "number",
+          "default": 1000,
+          "description": "Number of documents sampled when analyzing a collection schema."
+        },
+        "mongoCompass.confirmDangerousOperations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before dropping databases, collections, indexes or deleting documents."
+        },
+        "mongoCompass.queryHistoryLimit": {
+          "type": "number",
+          "default": 200,
+          "description": "Maximum number of entries kept in the query history."
+        },
+        "mongoCompass.hideSystemDatabases": {
+          "type": "boolean",
+          "default": false,
+          "description": "Hide admin, local and config databases from the explorer."
+        },
+        "mongoCompass.showSystemCollections": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show system.* collections in the explorer."
+        },
+        "mongoCompass.readPreference": {
+          "type": "string",
+          "enum": [
+            "primary",
+            "primaryPreferred",
+            "secondary",
+            "secondaryPreferred",
+            "nearest"
+          ],
+          "default": "primary",
+          "description": "Default read preference for queries."
+        },
+        "mongoCompass.connectionTimeoutMS": {
+          "type": "number",
+          "default": 30000,
+          "description": "Server selection timeout used when connecting."
+        },
+        "mongoCompass.exportBatchSize": {
+          "type": "number",
+          "default": 1000,
+          "description": "Batch size used when exporting collections."
+        },
+        "mongoCompass.autoPreviewPipeline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically re-run the aggregation preview when a stage changes."
+        }
+      }
+    },
+    "languages": [
+      {
+        "id": "mongodb-pipeline",
+        "aliases": [
+          "MongoDB Pipeline"
+        ],
+        "extensions": [
+          ".pipeline"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "compile": "tsc -p ./ --noEmit",
+    "typecheck": "tsc -p ./ --noEmit",
+    "package": "npx --yes @vscode/vsce package --no-dependencies",
+    "lint": "tsc -p ./ --noEmit"
+  },
+  "dependencies": {
+    "bson": "^6.10.1",
+    "mongodb": "^6.12.0",
+    "mongodb-connection-string-url": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  }
+}

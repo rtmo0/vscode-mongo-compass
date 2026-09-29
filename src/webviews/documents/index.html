@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}'; font-src {{cspSource}};"
+    />
+    <title>{{title}}</title>
+  </head>
+  <body>
+    <div id="app">
+      <div class="mc-toolbar">
+        <span class="mc-namespace" id="namespace">—</span>
+        <button class="mc-btn primary" id="btn-find" title="Find (Enter)">▶ Find</button>
+        <button class="mc-btn" id="btn-cancel" title="Cancel running query">■ Cancel</button>
+        <button class="mc-btn" id="btn-explain" title="Explain plan">Explain</button>
+        <button class="mc-btn" id="btn-insert" title="Insert document">＋ Insert</button>
+        <div class="mc-menu-wrap">
+          <button class="mc-btn" id="btn-bulk" title="Bulk operations">Bulk ▾</button>
+          <div class="mc-menu" id="bulk-menu" hidden>
+            <button id="menu-bulk-update">Bulk update documents</button>
+            <button id="menu-bulk-delete">Bulk delete documents</button>
+          </div>
+        </div>
+        <span class="spacer"></span>
+        <button class="mc-btn" id="btn-view-list" title="List view">☰</button>
+        <button class="mc-btn" id="btn-view-table" title="Table view">▦</button>
+        <button class="mc-btn" id="btn-view-json" title="JSON view">{ }</button>
+        <button class="mc-btn" id="btn-save" title="Save query to My Queries">★</button>
+        <button class="mc-btn" id="btn-export" title="Export query to language">⤓</button>
+        <button class="mc-btn" id="btn-agg" title="Open aggregation builder">Aggregation</button>
+      </div>
+
+      <div class="mc-querybar">
+        <div class="mc-querybar-row">
+          <input
+            class="mc-input filter-input"
+            id="filter"
+            placeholder='Filter, e.g. { name: "Ada", age: { $gte: 30 } }'
+            spellcheck="false"
+          />
+          <span class="mc-options-toggle" id="toggle-options">⚙ Options ▾</span>
+        </div>
+        <div class="mc-options collapsed" id="options">
+          <div class="mc-field">
+            <label for="project">Project</label>
+            <input class="mc-input" id="project" placeholder="{ name: 1, _id: 0 }" spellcheck="false" />
+          </div>
+          <div class="mc-field">
+            <label for="sort">Sort</label>
+            <input class="mc-input" id="sort" placeholder='{ age: -1 }' spellcheck="false" />
+          </div>
+          <div class="mc-field">
+            <label for="collation">Collation</label>
+            <input class="mc-input" id="collation" placeholder='{ locale: "en", strength: 2 }' spellcheck="false" />
+          </div>
+          <div class="mc-field">
+            <label for="skip">Skip</label>
+            <input class="mc-input" id="skip" type="number" min="0" value="0" />
+          </div>
+          <div class="mc-field">
+            <label for="limit">Limit</label>
+            <input class="mc-input" id="limit" type="number" min="0" value="20" />
+          </div>
+          <div class="mc-field">
+            <label for="maxTimeMS">Max Time MS</label>
+            <input class="mc-input" id="maxTimeMS" type="number" min="0" value="60000" />
+          </div>
+        </div>
+      </div>
+
+      <div class="mc-status" id="status">
+        <span id="status-text">Ready</span>
+      </div>
+
+      <div class="mc-content" id="content">
+        <div class="mc-empty">
+          <span>Press <strong>Find</strong> to query the collection.</span>
+        </div>
+      </div>
+
+      <div class="mc-pagination" id="pagination" style="display: none">
+        <button class="mc-btn" id="btn-first">« First</button>
+        <button class="mc-btn" id="btn-prev">‹ Prev</button>
+        <span id="page-info" class="mc-muted">—</span>
+        <button class="mc-btn" id="btn-next">Next ›</button>
+      </div>
+    </div>
+
+    <div id="modal-root"></div>
+    <script nonce="{{nonce}}" src="./index.js"></script>
+  </body>
+</html>

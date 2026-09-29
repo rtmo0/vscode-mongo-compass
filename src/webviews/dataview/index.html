@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}'; font-src {{cspSource}};"
+    />
+    <title>{{title}}</title>
+  </head>
+  <body>
+    <div id="app">
+      <div class="mc-toolbar">
+        <span class="mc-namespace" id="title">—</span>
+        <button class="mc-btn" id="btn-refresh" title="Refresh">⟳ Refresh</button>
+        <span class="spacer"></span>
+        <span id="toolbar-actions"></span>
+      </div>
+      <div class="mc-status" id="status"><span id="status-text">Ready</span></div>
+      <div class="mc-content" id="content">
+        <div class="mc-empty"><span class="mc-spinner"></span> Loading…</div>
+      </div>
+    </div>
+    <div id="modal-root"></div>
+    <script nonce="{{nonce}}" src="./index.js"></script>
+  </body>
+</html>

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}'; font-src {{cspSource}};"
+    />
+    <title>{{title}}</title>
+  </head>
+  <body>
+    <div id="app">
+      <div class="mc-toolbar">
+        <span class="mc-namespace" id="namespace">—</span>
+        <button class="mc-btn primary" id="btn-run" title="Run the whole pipeline">▶ Run</button>
+        <button class="mc-btn" id="btn-cancel" title="Cancel">■ Cancel</button>
+        <button class="mc-btn" id="btn-explain" title="Explain pipeline">Explain</button>
+        <button class="mc-btn" id="btn-count" title="Count results">Count</button>
+        <button class="mc-btn" id="btn-add" title="Add stage">＋ Add Stage</button>
+        <span class="spacer"></span>
+        <label class="mc-options-toggle" title="Re-run preview automatically">
+          <input type="checkbox" id="auto-preview" /> Auto-preview
+        </label>
+        <button class="mc-btn" id="btn-save" title="Save pipeline to My Queries">★</button>
+        <button class="mc-btn" id="btn-view" title="Create a view from this pipeline">Create View</button>
+        <button class="mc-btn" id="btn-export" title="Export to language">⤓</button>
+        <button class="mc-btn" id="btn-shell" title="Copy as mongosh snippet">mongosh</button>
+      </div>
+
+      <div class="mc-status" id="status">
+        <span id="status-text">Ready</span>
+      </div>
+
+      <div class="mc-content" id="stages"></div>
+
+      <div class="mc-pagination" id="results-bar" style="display: none">
+        <span id="results-info" class="mc-muted">—</span>
+      </div>
+    </div>
+
+    <div id="modal-root"></div>
+    <script nonce="{{nonce}}" src="./index.js"></script>
+  </body>
+</html>
