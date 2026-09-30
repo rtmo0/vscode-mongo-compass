@@ -1,6 +1,8 @@
 # MongoDB Compass for VS Code
 
-A MongoDB GUI inside VS Code, replicating the core feature set of [MongoDB Compass](https://github.com/mongodb-js/compass): connections, document browsing with a query bar, CRUD, an aggregation pipeline builder with live preview, index management, schema analysis, explain plans, validation rules, import/export, server stats and query history.
+An independent MongoDB GUI for VS Code: connections, document browsing with a query bar, CRUD, an aggregation pipeline builder with live preview, index management, schema analysis, explain plans, validation rules, import/export, server stats and query history.
+
+> This community extension is not affiliated with, endorsed by, or sponsored by MongoDB, Inc. MongoDB and MongoDB Compass are trademarks of MongoDB, Inc.
 
 Built on the official [`mongodb`](https://www.npmjs.com/package/mongodb) Node driver and [`bson`](https://www.npmjs.com/package/bson).
 
@@ -76,6 +78,12 @@ Built on the official [`mongodb`](https://www.npmjs.com/package/mongodb) Node dr
 
 ## Getting started
 
+### Requirements
+
+- VS Code 1.85 or newer.
+- A reachable MongoDB deployment. Standalone servers, replica sets, sharded clusters and MongoDB Atlas are supported by the official Node.js driver.
+- `mongosh` and `mongorestore` must be installed separately and available on `PATH` for the corresponding commands.
+
 ```bash
 npm install
 npm run build      # or: npm run watch
@@ -136,12 +144,27 @@ src/
 ## Packaging
 
 ```bash
-npm run package    # produces a .vsix via @vscode/vsce
+npm ci
+npm run package    # produces mongo-compass-<version>.vsix
 ```
+
+Install the resulting file with **Extensions: Install from VSIX...** before publishing it.
+
+## Security and privacy
+
+- Connection strings are stored in VS Code `SecretStorage`, backed by the operating system credential store.
+- Query history and saved queries are stored locally in VS Code global storage.
+- The extension does not include telemetry or send database contents to an external service.
+- Database queries and commands are sent only to the MongoDB deployment selected by the user.
+- Review the target database before using destructive operations such as drop, delete, restore, `$out` or `$merge`.
+
+## Support
+
+Report defects through the repository issue tracker. Include the extension version, VS Code version, MongoDB server version and relevant output from **MongoDB: Show Output Channel**. Do not include credentials or unredacted connection strings.
 
 ## Notes & limitations
 
-- This is an independent implementation inspired by Compass; it is not affiliated with MongoDB, Inc.
+- This is an independent implementation inspired by MongoDB Compass; it is not affiliated with MongoDB, Inc.
 - Atlas Search indexes require an Atlas deployment.
 - The webview editors use plain textareas with EJSON/shell syntax (no CodeMirror autocompletion as in Compass).
 - Data modeling diagrams, the embedded mongosh, and the GenAI assistant from Compass are out of scope.

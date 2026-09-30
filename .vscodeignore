@@ -5,5 +5,8 @@ node_modules/**
 esbuild.js
 tsconfig.json
 .gitignore
+.github/**
+.vscode/**
+.DS_Store
 **/*.map
 **/*.ts

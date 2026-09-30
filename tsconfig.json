@@ -1,12 +1,12 @@
 {
   "compilerOptions": {
-    "module": "commonjs",
+    "module": "ESNext",
     "target": "ES2022",
     "lib": [
       "ES2022",
       "DOM"
     ],
-    "moduleResolution": "node",
+    "moduleResolution": "Bundler",
     "outDir": "out",
     "rootDir": "src",
     "sourceMap": true,
@@ -18,7 +18,12 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "paths": {
+      "mongodb-connection-string-url": [
+        "./node_modules/mongodb-connection-string-url/lib/index.d.ts"
+      ]
+    }
   },
   "include": [
     "src/**/*.ts"

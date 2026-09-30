@@ -1,15 +1,26 @@
 {
   "name": "mongo-compass",
-  "displayName": "MongoDB Compass for VS Code",
-  "description": "MongoDB GUI inside VS Code: connections, documents CRUD, query bar, aggregation pipeline builder, indexes, schema analysis, explain plans, import/export and server stats. Feature set inspired by MongoDB Compass.",
+  "displayName": "MongoDB Explorer & Compass Tools",
+  "description": "Explore MongoDB, edit documents, build aggregation pipelines, manage indexes, analyze schemas and inspect performance without leaving VS Code.",
   "version": "0.1.0",
-  "publisher": "mongo-compass",
+  "publisher": "samarin-aa-aka-rtm00",
   "icon": "resources/mongodb.png",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
+  "preview": true,
+  "pricing": "Free",
+  "galleryBanner": {
+    "color": "#116149",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/rtmo0/vscode-mongo-compass.git"
   },
+  "homepage": "https://github.com/rtmo0/vscode-mongo-compass#readme",
+  "bugs": {
+    "url": "https://github.com/rtmo0/vscode-mongo-compass/issues"
+  },
+  "qna": "https://github.com/rtmo0/vscode-mongo-compass/discussions",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -28,6 +39,19 @@
     "atlas"
   ],
   "main": "./dist/extension.js",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Database connections and data-changing commands require a trusted workspace."
+    },
+    "virtualWorkspaces": {
+      "supported": true
+    }
+  },
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -646,12 +670,14 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run build",
+    "vscode:prepublish": "npm run check && npm run build",
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./ --noEmit",
     "typecheck": "tsc -p ./ --noEmit",
-    "package": "npx --yes @vscode/vsce package --no-dependencies",
+    "check": "npm run typecheck",
+    "package": "vsce package --no-dependencies",
+    "package:list": "vsce ls --no-dependencies",
     "lint": "tsc -p ./ --noEmit"
   },
   "dependencies": {
@@ -662,7 +688,8 @@
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.85.0",
-    "esbuild": "^0.24.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.6.0"
   }
 }
