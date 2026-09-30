@@ -8,6 +8,8 @@ import {
   clear,
   escapeHtml,
   highlightJson,
+  createSyntaxEditor,
+  createExplainView,
   formatNumber,
   debounce
 } from '../shared/client';
@@ -156,6 +158,9 @@ void request('ready').then((payload) => {
     state.viewMode = init.viewMode ?? 'list';
     syncInputsFromState();
     render();
+    if (state.activeSection === 'documents') {
+      void runFind();
+    }
   }
 });
 
@@ -171,6 +176,10 @@ $('btn-agg').addEventListener('click', () => void request('openAggregation'));
 $('btn-bulk').addEventListener('click', (event) => {
   event.stopPropagation();
   bulkMenuEl.hidden = !bulkMenuEl.hidden;
+});
+$('menu-bulk-insert').addEventListener('click', () => {
+  bulkMenuEl.hidden = true;
+  showBulkInsertModal();
 });
 $('menu-bulk-update').addEventListener('click', () => {
   bulkMenuEl.hidden = true;
@@ -535,15 +544,23 @@ function formatIndexUsage(
   return { text, title: text };
 }
 
-async function dropEmbeddedIndex(name: string): Promise<void> {
-  if (!window.confirm(`Drop index "${name}"?`)) return;
-  try {
-    await request('dropIndex', { name });
-    await loadIndexes();
-  } catch (err) {
-    state.error = (err as Error).message;
-    render();
-  }
+function dropEmbeddedIndex(name: string): void {
+  const body = el('div');
+  body.append(el('p', { text: `Drop index "${name}"? This action cannot be undone.` }));
+  openModal({
+    title: 'Drop index',
+    body,
+    primaryLabel: 'Drop index',
+    onPrimary: async () => {
+      try {
+        await request('dropIndex', { name });
+        closeModal();
+        await loadIndexes();
+      } catch (err) {
+        showFieldError((err as Error).message);
+      }
+    }
+  });
 }
 
 function showCreateIndexModal(): void {
@@ -648,9 +665,9 @@ function createFormInput(label: string, placeholder: string, type = 'text'): { w
 }
 
 function createFormTextarea(label: string, value: string): { wrap: HTMLElement; input: HTMLTextAreaElement } {
-  const input = el('textarea', { className: 'mc-textarea', rows: 4 }) as HTMLTextAreaElement;
-  input.value = value;
-  const wrap = el('label', { className: 'mc-index-form-control' }, el('span', { text: label }), input);
+  const editor = createSyntaxEditor(value, 4);
+  const input = editor.textarea;
+  const wrap = el('label', { className: 'mc-index-form-control' }, el('span', { text: label }), editor.element);
   return { wrap, input };
 }
 
@@ -841,7 +858,7 @@ function renderJsonValue(value: unknown, depth: number, expanded = false): HTMLE
       text: isArray ? key : `"${key}"`
     });
     childLine.append(property, el('span', { className: 'mc-json-colon', text: ': ' }));
-    const rendered = renderJsonValue(childValue, depth + 1);
+    const rendered = renderJsonValue(childValue, isJsonExpandable(childValue) ? 0 : depth + 1);
     if (isJsonExpandable(childValue)) {
       rendered.classList.add('mc-json-inline-node');
     }
@@ -1094,6 +1111,33 @@ async function cloneDocument(doc: Record<string, unknown>): Promise<void> {
   }
 }
 
+function showBulkInsertModal(): void {
+  const documentsInput = bulkEditorField(
+    'Documents (EJSON / shell syntax)',
+    '[\n  {\n    \n  },\n  {\n    \n  }\n]',
+    18
+  );
+  const body = el('div', { className: 'mc-bulk-form' });
+  body.append(documentsInput.wrap);
+  openModal({
+    title: `Bulk insert into ${state.namespace}`,
+    body,
+    primaryLabel: 'Insert documents',
+    onPrimary: async () => {
+      try {
+        const result = (await request('bulkInsert', {
+          documentsText: documentsInput.textarea.value
+        })) as { inserted: number };
+        closeModal();
+        setStatusMessage(`Inserted ${result.inserted} document(s).`);
+        await runFind();
+      } catch (err) {
+        showFieldError((err as Error).message);
+      }
+    }
+  });
+}
+
 function showBulkUpdateModal(): void {
   const filterText = state.query.filterText.trim() || '{}';
   const body = el('div', { className: 'mc-bulk-form' });
@@ -1157,10 +1201,9 @@ function bulkEditorField(label: string, value: string, rows: number): {
   textarea: HTMLTextAreaElement;
 } {
   const wrap = el('div', { className: 'mc-field' });
-  const textarea = el('textarea', { className: 'mc-textarea', rows }) as HTMLTextAreaElement;
-  textarea.value = value;
-  textarea.spellcheck = false;
-  wrap.append(el('label', { text: label }), textarea);
+  const editor = createSyntaxEditor(value, rows);
+  const textarea = editor.textarea;
+  wrap.append(el('label', { text: label }), editor.element);
   return { wrap, textarea };
 }
 
@@ -1213,47 +1256,7 @@ function buildExplainBody(explain: {
   executionStats?: Record<string, unknown>;
   raw: Record<string, unknown>;
 }): HTMLElement {
-  const body = el('div');
-
-  body.append(el('div', { className: 'mc-section-title', text: 'Insights' }));
-  for (const insight of explain.insights) {
-    body.append(el('div', { className: 'mc-insight', text: insight }));
-  }
-
-  body.append(el('div', { className: 'mc-section-title', text: 'Winning plan' }));
-  const renderNode = (node: { stage: string; description: string; details: Record<string, string>; children: unknown[] }): HTMLElement => {
-    const wrap = el('div', { className: 'mc-explain-node' });
-    wrap.append(el('div', { className: 'stage', text: node.stage }));
-    wrap.append(el('div', { className: 'desc', text: node.description }));
-    const kv = el('dl', { className: 'mc-kv' });
-    for (const [key, value] of Object.entries(node.details)) {
-      kv.append(el('dt', { text: key }), el('dd', { text: value }));
-    }
-    wrap.append(kv);
-    for (const child of node.children) {
-      wrap.append(renderNode(child as never));
-    }
-    return wrap;
-  };
-  for (const node of explain.tree) {
-    body.append(renderNode(node));
-  }
-
-  if (explain.executionStats) {
-    body.append(el('div', { className: 'mc-section-title', text: 'Execution stats' }));
-    const pre = el('pre', { className: 'mc-mono' });
-    pre.innerHTML = highlightJson(explain.executionStats);
-    body.append(pre);
-  }
-
-  body.append(el('div', { className: 'mc-section-title', text: 'Raw JSON' }));
-  const rawPre = el('pre', { className: 'mc-mono' });
-  rawPre.innerHTML = highlightJson(explain.raw);
-  const details = el('details');
-  details.append(el('summary', { text: 'Show raw explain output' }), rawPre);
-  body.append(details);
-
-  return body;
+  return createExplainView(explain as never);
 }
 
 // ───────────────────────────── save / export ─────────────────────────────
@@ -1400,10 +1403,9 @@ function showFieldError(message: string): void {
 function editorField(label: string, value: string, rows: number): HTMLElement {
   const wrap = el('div', { className: 'mc-field' });
   wrap.append(el('label', { text: label }));
-  const textarea = el('textarea', { className: 'mc-textarea', rows }) as HTMLTextAreaElement;
-  textarea.value = value;
-  textarea.spellcheck = false;
-  wrap.append(textarea);
+  const editor = createSyntaxEditor(value, rows);
+  const textarea = editor.textarea;
+  wrap.append(editor.element);
   currentGetValue = () => textarea.value;
   return wrap;
 }

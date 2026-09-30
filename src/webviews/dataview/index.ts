@@ -6,6 +6,8 @@ import {
   el,
   clear,
   highlightJson,
+  createSyntaxEditor,
+  createExplainView,
   formatNumber,
   debounce
 } from '../shared/client';
@@ -17,6 +19,8 @@ type ViewKind =
   | 'explain'
   | 'stats'
   | 'serverStatus'
+  | 'performanceMetrics'
+  | 'databaseCommand'
   | 'queryHistory'
   | 'savedQueries'
   | 'currentOp';
@@ -47,6 +51,29 @@ const statusTextEl = $('status-text');
 const toolbarActions = $('toolbar-actions');
 const modalRoot = $('modal-root');
 
+interface PerformanceSampleData {
+  sampledAt: number;
+  connectionName?: string;
+  serverStatus: Record<string, unknown>;
+  currentOp: Array<Record<string, unknown>>;
+  top: Record<string, unknown>;
+}
+
+interface PerformancePoint {
+  sampledAt: number;
+  operations: Record<string, number>;
+  readWrite: Record<string, number>;
+  network: Record<string, number>;
+  connections: Record<string, number>;
+  memory: Record<string, number>;
+}
+
+let performanceTimer: ReturnType<typeof setInterval> | undefined;
+let performancePaused = false;
+let previousPerformanceSample: PerformanceSampleData | undefined;
+let performanceHistory: PerformancePoint[] = [];
+let databaseCommandTextarea: HTMLTextAreaElement | undefined;
+
 // ───────────────────────────── init ─────────────────────────────
 
 on('init', (payload) => {
@@ -63,6 +90,12 @@ on('init', (payload) => {
   state.data = init.data ?? null;
   state.error = init.error ?? null;
   state.loading = false;
+  if (state.kind === 'performanceMetrics' && init.data) {
+    ingestPerformanceSample(init.data as PerformanceSampleData);
+    startPerformancePolling();
+  } else {
+    stopPerformancePolling();
+  }
   render();
   persist();
 });
@@ -129,6 +162,12 @@ function render(): void {
     case 'serverStatus':
       contentEl.append(renderServerStatus());
       break;
+    case 'performanceMetrics':
+      contentEl.append(renderPerformanceMetrics());
+      break;
+    case 'databaseCommand':
+      contentEl.append(renderDatabaseCommand());
+      break;
     case 'queryHistory':
       contentEl.append(renderHistory());
       break;
@@ -183,6 +222,15 @@ function renderToolbar(): void {
       break;
     case 'currentOp':
       addButton('⟳ Refresh', 'Refresh operations', () => void refresh());
+      break;
+    case 'performanceMetrics':
+      addButton(performancePaused ? '▶ Resume' : 'Ⅱ Pause', 'Pause or resume live sampling', () => {
+        performancePaused = !performancePaused;
+        render();
+      });
+      break;
+    case 'databaseCommand':
+      addButton('▶ Run', 'Run command (Cmd/Ctrl+Enter)', () => void runDatabaseCommand());
       break;
     default:
       break;
@@ -340,17 +388,24 @@ function formatIndexUsage(accesses: IndexUsageStat['accesses'] | undefined): str
   return `${formatNumber(accesses.ops ?? 0)} (since ${formattedSince})`;
 }
 
-async function dropIndex(name: string): Promise<void> {
-  if (!window.confirm(`Drop index "${name}"?`)) {
-    return;
-  }
-  try {
-    await request('dropIndex', { name });
-    setStatusMessage(`Index "${name}" dropped.`);
-    await refresh();
-  } catch (err) {
-    setStatusMessage((err as Error).message, true);
-  }
+function dropIndex(name: string): void {
+  const body = el('div');
+  body.append(el('p', { text: `Drop index "${name}"? This action cannot be undone.` }));
+  openModal({
+    title: 'Drop index',
+    body,
+    primaryLabel: 'Drop index',
+    onPrimary: async () => {
+      try {
+        await request('dropIndex', { name });
+        closeModal();
+        setStatusMessage(`Index "${name}" dropped.`);
+        await refresh();
+      } catch (err) {
+        showFieldError((err as Error).message);
+      }
+    }
+  });
 }
 
 function showCreateIndexModal(): void {
@@ -643,46 +698,7 @@ function renderExplain(): HTMLElement {
     return empty('No explain data');
   }
 
-  const wrap = el('div');
-  wrap.append(el('div', { className: 'mc-section-title', text: 'Insights' }));
-  for (const insight of data.insights) {
-    wrap.append(el('div', { className: 'mc-insight', text: insight }));
-  }
-
-  wrap.append(el('div', { className: 'mc-section-title', text: 'Winning plan' }));
-  const renderNode = (node: { stage: string; description: string; details: Record<string, string>; children: unknown[] }): HTMLElement => {
-    const nodeEl = el('div', { className: 'mc-explain-node' });
-    nodeEl.append(el('div', { className: 'stage', text: node.stage }));
-    nodeEl.append(el('div', { className: 'desc', text: node.description }));
-    const kv = el('dl', { className: 'mc-kv' });
-    for (const [key, value] of Object.entries(node.details)) {
-      kv.append(el('dt', { text: key }), el('dd', { text: value }));
-    }
-    nodeEl.append(kv);
-    for (const child of node.children) {
-      nodeEl.append(renderNode(child as never));
-    }
-    return nodeEl;
-  };
-  for (const node of data.tree) {
-    wrap.append(renderNode(node));
-  }
-
-  if (data.executionStats) {
-    wrap.append(el('div', { className: 'mc-section-title', text: 'Execution stats' }));
-    const pre = el('pre', { className: 'mc-mono' });
-    pre.innerHTML = highlightJson(data.executionStats);
-    wrap.append(pre);
-  }
-
-  wrap.append(el('div', { className: 'mc-section-title', text: 'Raw output' }));
-  const details = el('details');
-  const rawPre = el('pre', { className: 'mc-mono' });
-  rawPre.innerHTML = highlightJson(data.raw);
-  details.append(el('summary', { text: 'Show raw explain JSON' }), rawPre);
-  wrap.append(details);
-
-  return wrap;
+  return createExplainView(data as never);
 }
 
 // ───────────────────────────── stats ─────────────────────────────
@@ -809,6 +825,278 @@ function renderServerStatus(): HTMLElement {
   wrap.append(details);
 
   return wrap;
+}
+
+// ───────────────────────────── performance metrics ─────────────────────────────
+
+function startPerformancePolling(): void {
+  if (performanceTimer) return;
+  performanceTimer = setInterval(() => void pollPerformanceSample(), 1000);
+}
+
+function stopPerformancePolling(): void {
+  if (performanceTimer) clearInterval(performanceTimer);
+  performanceTimer = undefined;
+}
+
+async function pollPerformanceSample(): Promise<void> {
+  if (performancePaused || state.kind !== 'performanceMetrics') return;
+  try {
+    const result = await request<{ data: PerformanceSampleData }>('performanceSample');
+    state.data = result.data;
+    ingestPerformanceSample(result.data);
+    render();
+  } catch (err) {
+    statusTextEl.textContent = (err as Error).message;
+    statusTextEl.classList.add('error');
+  }
+}
+
+function ingestPerformanceSample(sample: PerformanceSampleData): void {
+  const previous = previousPerformanceSample;
+  previousPerformanceSample = sample;
+  if (!previous) return;
+  const seconds = Math.max((sample.sampledAt - previous.sampledAt) / 1000, 0.001);
+  const currentStatus = sample.serverStatus;
+  const previousStatus = previous.serverStatus;
+  const currentOps = objectValue(currentStatus.opcounters);
+  const previousOps = objectValue(previousStatus.opcounters);
+  const currentNetwork = objectValue(currentStatus.network);
+  const previousNetwork = objectValue(previousStatus.network);
+  const currentConnections = objectValue(currentStatus.connections);
+  const currentMemory = objectValue(currentStatus.mem);
+  const currentExtra = objectValue(currentStatus.opcountersRepl);
+  const previousExtra = objectValue(previousStatus.opcountersRepl);
+
+  performanceHistory.push({
+    sampledAt: sample.sampledAt,
+    operations: rateSeries(currentOps, previousOps, seconds, ['insert', 'query', 'update', 'delete', 'command']),
+    readWrite: {
+      reads: counterRate(currentOps.query, previousOps.query, seconds) + counterRate(currentOps.getmore, previousOps.getmore, seconds),
+      writes: counterRate(currentOps.insert, previousOps.insert, seconds) + counterRate(currentOps.update, previousOps.update, seconds) + counterRate(currentOps.delete, previousOps.delete, seconds),
+      replication: Object.values(rateSeries(currentExtra, previousExtra, seconds, ['insert', 'query', 'update', 'delete', 'command'])).reduce((sum, value) => sum + value, 0)
+    },
+    network: {
+      in: counterRate(currentNetwork.bytesIn, previousNetwork.bytesIn, seconds),
+      out: counterRate(currentNetwork.bytesOut, previousNetwork.bytesOut, seconds),
+      requests: counterRate(currentNetwork.numRequests, previousNetwork.numRequests, seconds)
+    },
+    connections: {
+      current: numberValue(currentConnections.current),
+      active: numberValue(currentConnections.active),
+      available: numberValue(currentConnections.available)
+    },
+    memory: {
+      resident: numberValue(currentMemory.resident),
+      virtual: numberValue(currentMemory.virtual)
+    }
+  });
+  performanceHistory = performanceHistory.slice(-60);
+}
+
+function renderPerformanceMetrics(): HTMLElement {
+  const sample = state.data as PerformanceSampleData | null;
+  if (!sample) return empty('Waiting for performance samples…');
+  const wrap = el('div', { className: 'mc-performance' });
+  const heading = el('div', { className: 'mc-performance-heading' });
+  heading.append(
+    el('div', {}, el('strong', { text: sample.connectionName ?? 'MongoDB' }), el('span', { className: 'mc-muted', text: ' · live server metrics' })),
+    el('span', { className: `mc-live-indicator${performancePaused ? ' paused' : ''}`, text: performancePaused ? 'Paused' : 'Live' })
+  );
+  wrap.append(heading);
+
+  if (performanceHistory.length === 0) {
+    wrap.append(el('div', { className: 'mc-insight', text: 'Collecting the first two samples…' }));
+  }
+
+  const charts = el('div', { className: 'mc-performance-grid' });
+  charts.append(
+    metricChart('Operations', 'ops/s', 'operations', ['insert', 'query', 'update', 'delete', 'command']),
+    metricChart('Read & Write', 'ops/s', 'readWrite', ['reads', 'writes', 'replication']),
+    metricChart('Network', 'bytes/s', 'network', ['in', 'out']),
+    metricChart('Connections', 'connections', 'connections', ['current', 'active']),
+    metricChart('Memory', 'MB', 'memory', ['resident', 'virtual'])
+  );
+  wrap.append(charts);
+
+  const details = el('div', { className: 'mc-performance-tables' });
+  details.append(renderHottestCollections(sample), renderSlowOperations(sample));
+  wrap.append(details);
+  return wrap;
+}
+
+// ───────────────────────────── database command ─────────────────────────────
+
+function renderDatabaseCommand(): HTMLElement {
+  const data = state.data as {
+    database?: string;
+    commandText?: string;
+    result?: string | null;
+    commandError?: string | null;
+  } | null;
+  const wrap = el('div', { className: 'mc-command-view' });
+  const editor = createSyntaxEditor(data?.commandText ?? '{\n  ping: 1\n}', 14);
+  databaseCommandTextarea = editor.textarea;
+  databaseCommandTextarea.addEventListener('keydown', (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+      event.preventDefault();
+      void runDatabaseCommand();
+    }
+  });
+  wrap.append(
+    el('div', { className: 'mc-command-header' },
+      el('div', {}, el('strong', { text: `Database: ${state.context.database ?? data?.database ?? '—'}` }), el('span', { className: 'mc-muted', text: ' · EJSON / shell syntax' })),
+      el('button', { className: 'mc-btn primary', text: '▶ Run', title: 'Run command (Cmd/Ctrl+Enter)' })
+    ),
+    editor.element
+  );
+  const runButton = wrap.querySelector<HTMLButtonElement>('.mc-command-header button');
+  runButton?.addEventListener('click', () => void runDatabaseCommand());
+
+  const output = el('section', { className: 'mc-command-output' });
+  output.append(el('div', { className: 'mc-section-title', text: 'Result' }));
+  if (data?.commandError) {
+    output.append(el('div', { className: 'mc-error-text', text: data.commandError }));
+  } else if (data?.result) {
+    const pre = el('pre', { className: 'mc-mono' });
+    pre.innerHTML = highlightJson(data.result);
+    output.append(pre);
+  } else {
+    output.append(el('div', { className: 'mc-muted', text: 'Run a command to see its result.' }));
+  }
+  wrap.append(output);
+  return wrap;
+}
+
+async function runDatabaseCommand(): Promise<void> {
+  const commandText = databaseCommandTextarea?.value ?? '';
+  const database = state.context.database;
+  if (!database || !commandText.trim()) return;
+  statusTextEl.textContent = 'Running command…';
+  try {
+    const result = await request<{ result: string }>('runCommand', { database, commandText });
+    state.data = { database, commandText, result: result.result, commandError: null };
+    render();
+    statusTextEl.textContent = 'Command completed.';
+    persist();
+  } catch (err) {
+    state.data = { database, commandText, result: null, commandError: (err as Error).message };
+    render();
+    statusTextEl.textContent = 'Command failed.';
+    persist();
+  }
+}
+
+const chartColors = ['#00a35c', '#4c9ffe', '#f2b134', '#e15b64', '#a879e8'];
+
+function metricChart(title: string, unit: string, group: keyof PerformancePoint, series: string[]): HTMLElement {
+  const card = el('section', { className: 'mc-metric-card' });
+  const latest = performanceHistory.at(-1)?.[group] as Record<string, number> | undefined;
+  card.append(el('div', { className: 'mc-metric-title' }, el('strong', { text: title }), el('span', { text: unit })));
+  const chart = el('div', { className: 'mc-line-chart' });
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 600 170');
+  svg.setAttribute('preserveAspectRatio', 'none');
+  const values = performanceHistory.flatMap((point) => series.map((name) => numberValue((point[group] as Record<string, number>)[name])));
+  const max = Math.max(...values, 1);
+  for (const y of [20, 65, 110, 155]) {
+    const line = document.createElementNS(svg.namespaceURI, 'line');
+    line.setAttribute('x1', '0'); line.setAttribute('x2', '600'); line.setAttribute('y1', String(y)); line.setAttribute('y2', String(y));
+    line.setAttribute('class', 'mc-chart-gridline');
+    svg.append(line);
+  }
+  series.forEach((name, seriesIndex) => {
+    const points = performanceHistory.map((point, index) => {
+      const value = numberValue((point[group] as Record<string, number>)[name]);
+      const x = performanceHistory.length <= 1 ? 0 : index * 600 / (performanceHistory.length - 1);
+      const y = 160 - value / max * 145;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const polyline = document.createElementNS(svg.namespaceURI, 'polyline');
+    polyline.setAttribute('points', points);
+    polyline.setAttribute('fill', 'none');
+    polyline.setAttribute('stroke', chartColors[seriesIndex % chartColors.length]);
+    polyline.setAttribute('stroke-width', '2');
+    polyline.setAttribute('vector-effect', 'non-scaling-stroke');
+    svg.append(polyline);
+  });
+  chart.append(svg);
+  card.append(chart);
+  const legend = el('div', { className: 'mc-chart-legend' });
+  series.forEach((name) => legend.append(
+    el('span', {}, el('i', { className: 'mc-chart-swatch' }), el('span', { text: `${name} ${formatMetric(latest?.[name] ?? 0, unit)}` }))
+  ));
+  Array.from(legend.querySelectorAll<HTMLElement>('.mc-chart-swatch')).forEach((swatch, index) => {
+    swatch.style.background = chartColors[index % chartColors.length];
+  });
+  card.append(legend);
+  return card;
+}
+
+function renderHottestCollections(sample: PerformanceSampleData): HTMLElement {
+  const card = el('section', { className: 'mc-metric-card mc-metric-table-card' });
+  card.append(el('div', { className: 'mc-metric-title' }, el('strong', { text: 'Hottest Collections' }), el('span', { text: 'total time' })));
+  const rows = Object.entries(sample.top ?? {})
+    .filter(([namespace]) => !namespace.startsWith('admin.') && !namespace.startsWith('config.') && !namespace.startsWith('local.'))
+    .map(([namespace, raw]) => {
+      const total = objectValue(objectValue(raw).total);
+      return { namespace, micros: numberValue(total.time) };
+    })
+    .sort((a, b) => b.micros - a.micros)
+    .slice(0, 8);
+  const table = el('table', { className: 'mc-table mc-performance-table' });
+  table.append(el('thead', {}, el('tr', {}, el('th', { text: 'Namespace' }), el('th', { text: 'Time' }))));
+  const body = el('tbody');
+  for (const row of rows) body.append(el('tr', {}, el('td', { text: row.namespace }), el('td', { text: formatDurationMicros(row.micros) })));
+  if (!rows.length) body.append(el('tr', {}, el('td', { text: 'No collection activity yet', colSpan: 2 })));
+  table.append(body); card.append(table); return card;
+}
+
+function renderSlowOperations(sample: PerformanceSampleData): HTMLElement {
+  const card = el('section', { className: 'mc-metric-card mc-metric-table-card' });
+  card.append(el('div', { className: 'mc-metric-title' }, el('strong', { text: 'Slowest Operations' }), el('span', { text: 'currently running' })));
+  const operations = [...(sample.currentOp ?? [])]
+    .filter((operation) => numberValue(operation.secs_running ?? operation.microsecs_running) > 0)
+    .sort((a, b) => numberValue(b.secs_running ?? b.microsecs_running) - numberValue(a.secs_running ?? a.microsecs_running))
+    .slice(0, 8);
+  const table = el('table', { className: 'mc-table mc-performance-table' });
+  table.append(el('thead', {}, el('tr', {}, el('th', { text: 'Operation' }), el('th', { text: 'Namespace' }), el('th', { text: 'Time' }))));
+  const body = el('tbody');
+  for (const operation of operations) body.append(el('tr', {},
+    el('td', { text: String(operation.op ?? operation.desc ?? 'command') }),
+    el('td', { text: String(operation.ns ?? '—') }),
+    el('td', { text: operation.secs_running !== undefined ? `${numberValue(operation.secs_running).toFixed(1)} s` : `${(numberValue(operation.microsecs_running) / 1e6).toFixed(1)} s` })
+  ));
+  if (!operations.length) body.append(el('tr', {}, el('td', { text: 'No running operations', colSpan: 3 })));
+  table.append(body); card.append(table); return card;
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function numberValue(value: unknown): number {
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function counterRate(current: unknown, previous: unknown, seconds: number): number {
+  return Math.max(0, numberValue(current) - numberValue(previous)) / seconds;
+}
+
+function rateSeries(current: Record<string, unknown>, previous: Record<string, unknown>, seconds: number, keys: string[]): Record<string, number> {
+  return Object.fromEntries(keys.map((key) => [key, counterRate(current[key], previous[key], seconds)]));
+}
+
+function formatMetric(value: number, unit: string): string {
+  if (unit === 'bytes/s') return `${formatBytes(value)}/s`;
+  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
+}
+
+function formatDurationMicros(value: number): string {
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)} s`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)} ms`;
+  return `${value.toFixed(0)} μs`;
 }
 
 // ───────────────────────────── query history ─────────────────────────────
@@ -1150,10 +1438,9 @@ function editorField(label: string, value: string, rows: number, key: string): H
   const wrap = el('div', { className: 'mc-field' });
   wrap.style.marginBottom = '8px';
   wrap.append(el('label', { text: label }));
-  const textarea = el('textarea', { className: 'mc-textarea', rows }) as HTMLTextAreaElement;
-  textarea.value = value;
-  textarea.spellcheck = false;
-  wrap.append(textarea);
+  const editor = createSyntaxEditor(value, rows);
+  const textarea = editor.textarea;
+  wrap.append(editor.element);
   fieldValues.set(key, () => textarea.value);
   return wrap;
 }

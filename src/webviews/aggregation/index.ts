@@ -6,6 +6,8 @@ import {
   el,
   clear,
   highlightJson,
+  createSyntaxEditor,
+  createExplainView,
   formatNumber,
   debounce
 } from '../shared/client';
@@ -40,6 +42,7 @@ interface UiState {
 }
 
 let stageOperators: StageOperator[] = [];
+const previewVersions = new Map<string, number>();
 
 let state: UiState = getState<UiState>({
   namespace: '—',
@@ -231,9 +234,8 @@ function renderStage(stage: Stage, index: number): HTMLElement {
 
     const editorWrap = el('div', { className: 'mc-field' });
     editorWrap.append(el('label', { text: 'Stage' }));
-    const textarea = el('textarea', { className: 'mc-textarea', rows: 8 }) as HTMLTextAreaElement;
-    textarea.value = stage.text;
-    textarea.spellcheck = false;
+    const editor = createSyntaxEditor(stage.text, 8);
+    const textarea = editor.textarea;
     textarea.addEventListener('input', () => {
       stage.text = textarea.value;
       persist();
@@ -245,7 +247,7 @@ function renderStage(stage: Stage, index: number): HTMLElement {
       }
     }, 600);
     textarea.addEventListener('input', debouncedPreview);
-    editorWrap.append(textarea);
+    editorWrap.append(editor.element);
 
     const previewWrap = el('div', { className: 'mc-stage-preview' });
     previewWrap.append(el('label', { className: 'mc-muted', text: 'Preview' }));
@@ -366,6 +368,8 @@ async function previewUpTo(stageId: string): Promise<void> {
   }
   stage.isLoading = true;
   stage.previewError = undefined;
+  const previewVersion = (previewVersions.get(stageId) ?? 0) + 1;
+  previewVersions.set(stageId, previewVersion);
   render();
 
   try {
@@ -379,13 +383,16 @@ async function previewUpTo(stageId: string): Promise<void> {
       warning?: string;
       elapsedMS: number;
     };
+    if (previewVersions.get(stageId) !== previewVersion) return;
     stage.preview = result.documents ?? [];
     stage.previewCount = result.count ?? null;
     stage.previewError = result.error ?? result.warning ?? undefined;
     state.elapsedMS = result.elapsedMS ?? 0;
   } catch (err) {
+    if (previewVersions.get(stageId) !== previewVersion) return;
     stage.previewError = (err as Error).message;
   } finally {
+    if (previewVersions.get(stageId) !== previewVersion) return;
     stage.isLoading = false;
     render();
     persist();
@@ -413,7 +420,7 @@ async function runAll(): Promise<void> {
     state.elapsedMS = result.elapsedMS ?? 0;
     state.error = result.error ?? null;
     state.warning = result.warning ?? null;
-    showResults();
+    showResults(result.warning);
   } catch (err) {
     state.error = (err as Error).message;
   } finally {
@@ -437,16 +444,18 @@ async function runCount(): Promise<void> {
   }
 }
 
-function showResults(): void {
-  if (state.results.length === 0) {
-    return;
-  }
+function showResults(message?: string): void {
   const body = el('div');
-  const pre = el('pre', { className: 'mc-mono' });
-  pre.innerHTML = highlightJson(state.results.map((r) => safeParse(r)));
-  pre.style.maxHeight = '60vh';
-  pre.style.overflow = 'auto';
-  body.append(pre);
+  if (message) body.append(el('div', { className: 'mc-insight', text: message }));
+  if (state.results.length > 0) {
+    const pre = el('pre', { className: 'mc-mono' });
+    pre.innerHTML = highlightJson(state.results.map((r) => safeParse(r)));
+    pre.style.maxHeight = '60vh';
+    pre.style.overflow = 'auto';
+    body.append(pre);
+  } else if (!message) {
+    body.append(el('div', { className: 'mc-muted', text: 'Pipeline completed with no returned documents.' }));
+  }
   openModal({
     title: `Pipeline results — ${state.namespace}`,
     body,
@@ -483,38 +492,9 @@ function renderExplain(explain: {
   insights: string[];
   raw: Record<string, unknown>;
 }): void {
-  const body = el('div');
-  body.append(el('div', { className: 'mc-section-title', text: 'Insights' }));
-  for (const insight of explain.insights) {
-    body.append(el('div', { className: 'mc-insight', text: insight }));
-  }
-  body.append(el('div', { className: 'mc-section-title', text: 'Plan' }));
-  const renderNode = (node: { stage: string; description: string; details: Record<string, string>; children: unknown[] }): HTMLElement => {
-    const wrap = el('div', { className: 'mc-explain-node' });
-    wrap.append(el('div', { className: 'stage', text: node.stage }));
-    wrap.append(el('div', { className: 'desc', text: node.description }));
-    const kv = el('dl', { className: 'mc-kv' });
-    for (const [key, value] of Object.entries(node.details)) {
-      kv.append(el('dt', { text: key }), el('dd', { text: value }));
-    }
-    wrap.append(kv);
-    for (const child of node.children) {
-      wrap.append(renderNode(child as never));
-    }
-    return wrap;
-  };
-  for (const node of explain.tree) {
-    body.append(renderNode(node));
-  }
-  const details = el('details');
-  const rawPre = el('pre', { className: 'mc-mono' });
-  rawPre.innerHTML = highlightJson(explain.raw);
-  details.append(el('summary', { text: 'Raw explain output' }), rawPre);
-  body.append(details);
-
   openModal({
     title: `Explain — ${state.namespace}`,
-    body,
+    body: createExplainView(explain as never),
     primaryLabel: 'Close',
     onPrimary: () => closeModal(),
     hideSecondary: true

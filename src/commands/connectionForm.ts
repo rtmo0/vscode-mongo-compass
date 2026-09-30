@@ -50,15 +50,15 @@ export async function promptForConnection(
     return undefined;
   }
 
-  let readPreference = existing?.readPreference;
-  let serverSelectionTimeoutMS = existing?.serverSelectionTimeoutMS;
-  let notes = existing?.notes;
-  let color = existing?.color;
+  let readPreference: ConnectionOptions['readPreference'];
+  let serverSelectionTimeoutMS: number | undefined;
+  let notes: string | undefined;
+  let color: string | undefined;
 
   if (advanced.value) {
     const pickedReadPreference = await vscode.window.showQuickPick(
       ['primary', 'primaryPreferred', 'secondary', 'secondaryPreferred', 'nearest'].map(
-        (value) => ({ label: value })
+        (value) => ({ label: value, picked: value === existing?.readPreference })
       ),
       {
         title: 'Read preference',
@@ -90,7 +90,10 @@ export async function promptForConnection(
     }
 
     const pickedColor = await vscode.window.showQuickPick(
-      ['(none)', 'green', 'blue', 'red', 'orange', 'purple'].map((value) => ({ label: value })),
+      ['(none)', 'green', 'blue', 'red', 'orange', 'purple'].map((value) => ({
+        label: value,
+        picked: value === (existing?.color ?? '(none)')
+      })),
       { title: 'Connection color', placeHolder: 'Pick a badge color' }
     );
     if (pickedColor === undefined) {

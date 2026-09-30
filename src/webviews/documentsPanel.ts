@@ -160,6 +160,21 @@ export class DocumentsPanel extends BaseWebviewPanel {
       this.post('refresh');
     });
 
+    this.registerHandler('bulkInsert', async (msg, respond) => {
+      const payload = msg.payload as { documentsText: string };
+      const parsed = parseShellBSON(payload.documentsText);
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        throw new Error('Documents must be a non-empty array.');
+      }
+      if (parsed.some((document) => document === null || typeof document !== 'object' || Array.isArray(document))) {
+        throw new Error('Every item must be a document object.');
+      }
+      const service = await this.service();
+      const inserted = await service.insertMany(this.state.namespace, parsed);
+      respond({ inserted });
+      this.post('refresh');
+    });
+
     this.registerHandler('update', async (msg, respond) => {
       const payload = msg.payload as { filterText: string; documentText: string };
       const filter = parseShellBSON(payload.filterText);

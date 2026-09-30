@@ -101,3 +101,10 @@ export function redactConnectionString(uri: string): string {
     return uri.replace(/\/\/([^:]+):([^@]+)@/, '//$1:••••••@');
   }
 }
+
+/** Return the connection string with its path set to the selected database. */
+export function connectionStringForDatabase(uri: string, database: string): string {
+  const cs = new ConnectionString(uri.trim());
+  cs.pathname = `/${encodeURIComponent(database)}`;
+  return cs.toString();
+}

@@ -123,6 +123,13 @@ export function parseStage(text: string): Document | null {
   if (Array.isArray(parsed)) {
     throw new QueryParseError('A stage must be a single document, not an array', trimmed);
   }
+  const keys = Object.keys(parsed);
+  if (keys.length === 0) {
+    return null;
+  }
+  if (keys.length !== 1 || !keys[0].startsWith('$')) {
+    throw new QueryParseError('A stage must contain exactly one aggregation operator', trimmed);
+  }
   return parsed;
 }
 

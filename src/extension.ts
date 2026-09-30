@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { EJSON, type Document } from 'bson';
+import type { Document } from 'bson';
 
 import { ConnectionStore } from './core/connectionStore';
 import { ConnectionManager } from './core/connectionManager';
@@ -16,6 +16,7 @@ import type { ConnectionOptions, LiveConnection, QueryState } from './core/types
 import {
   MongoExplorerProvider,
   ConnectionNode,
+  DatabasesNode,
   DatabaseNode,
   CollectionsNode,
   CollectionNode,
@@ -30,7 +31,7 @@ import { AggregationPanel } from './webviews/aggregationPanel';
 import { DataPanel } from './webviews/dataPanel';
 
 import { promptForConnection, promptForUri } from './commands/connectionForm';
-import { deriveConnectionName } from './core/connectionString';
+import { connectionStringForDatabase, deriveConnectionName } from './core/connectionString';
 
 interface Services {
   connectionManager: ConnectionManager;
@@ -345,7 +346,19 @@ function registerExplorerCommands(context: vscode.ExtensionContext, s: Services)
       explorer.refresh(node as never);
     }),
 
-    vscode.commands.registerCommand('mongoCompass.createDatabase', async (arg?: ConnectionNode) => {
+    vscode.commands.registerCommand('mongoCompass.refreshDatabases', () => {
+      explorer.refresh();
+    }),
+
+    vscode.commands.registerCommand('mongoCompass.refreshCollections', () => {
+      explorer.refresh();
+    }),
+
+    vscode.commands.registerCommand('mongoCompass.refreshCollection', () => {
+      explorer.refresh();
+    }),
+
+    vscode.commands.registerCommand('mongoCompass.createDatabase', async (arg?: DatabasesNode) => {
       const connection = arg?.connection ?? connectionManager.activeConnection;
       if (!connection) {
         void vscode.window.showErrorMessage('Connect to a server first.');
@@ -410,6 +423,29 @@ function registerExplorerCommands(context: vscode.ExtensionContext, s: Services)
         `Stats — ${arg.database.name}`
       );
     }),
+
+    vscode.commands.registerCommand(
+      'mongoCompass.openMongosh',
+      async (arg?: DatabaseNode | CollectionNode) => {
+        if (!(arg instanceof DatabaseNode) && !(arg instanceof CollectionNode)) {
+          return;
+        }
+        const databaseName = arg instanceof DatabaseNode ? arg.database.name : arg.databaseName;
+        const collectionName = arg instanceof CollectionNode ? arg.collection.name : undefined;
+        const uri = connectionStringForDatabase(arg.connection.options.connectionString, databaseName);
+        const terminal = vscode.window.createTerminal({
+          name: `mongosh: ${databaseName}`,
+          location: vscode.TerminalLocation.Editor,
+          env: {
+            MONGO_COMPASS_URI: uri,
+            MONGO_COMPASS_DATABASE: databaseName,
+            MONGO_COMPASS_COLLECTION: collectionName ?? ''
+          }
+        });
+        terminal.show();
+        terminal.sendText('mongosh "$MONGO_COMPASS_URI"', true);
+      }
+    ),
 
     vscode.commands.registerCommand('mongoCompass.showLogs', () => getOutputChannel().show(true))
   );
@@ -1027,6 +1063,70 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
   const { connectionManager } = s;
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('mongoCompass.restoreDatabase', async (arg?: DatabasesNode) => {
+      const connection = arg?.connection ?? connectionManager.activeConnection;
+      if (!connection) {
+        void vscode.window.showErrorMessage('Connect to a server first.');
+        return;
+      }
+
+      const databaseName = await vscode.window.showInputBox({
+        title: 'Restore MongoDB Database',
+        prompt: 'Target database name',
+        validateInput: (value) => value.trim() ? null : 'Database name is required'
+      });
+      if (!databaseName) {
+        return;
+      }
+
+      const source = await vscode.window.showOpenDialog({
+        title: 'Select mongodump archive or dump directory',
+        canSelectFiles: true,
+        canSelectFolders: true,
+        canSelectMany: false,
+        filters: { 'MongoDB dump archives': ['archive', 'gz'], 'All files': ['*'] }
+      });
+      if (!source?.[0]) {
+        return;
+      }
+
+      const restoreMode = await vscode.window.showQuickPick(
+        [
+          { label: 'Merge', description: 'Keep existing collections and restore dump documents', drop: false },
+          { label: 'Replace', description: 'Drop collections from the dump before restoring them', drop: true }
+        ],
+        { title: 'Restore mode', placeHolder: 'Choose how to handle existing collections' }
+      );
+      if (!restoreMode) {
+        return;
+      }
+
+      const dumpPath = source[0].fsPath;
+      const sourceStat = await vscode.workspace.fs.stat(source[0]);
+      const isDirectory = (sourceStat.type & vscode.FileType.Directory) !== 0;
+      const isGzip = dumpPath.toLowerCase().endsWith('.gz');
+      const restoreArgs = [
+        '--uri="$MONGO_COMPASS_URI"',
+        '--nsFrom="*.*"',
+        '--nsTo="$MONGO_COMPASS_DATABASE.*"',
+        restoreMode.drop ? '--drop' : '',
+        isGzip ? '--gzip' : '',
+        isDirectory ? '"$MONGO_COMPASS_DUMP"' : '--archive="$MONGO_COMPASS_DUMP"'
+      ].filter(Boolean).join(' ');
+
+      const terminal = vscode.window.createTerminal({
+        name: `Restore: ${databaseName.trim()}`,
+        location: vscode.TerminalLocation.Editor,
+        env: {
+          MONGO_COMPASS_URI: connection.options.connectionString,
+          MONGO_COMPASS_DATABASE: databaseName.trim(),
+          MONGO_COMPASS_DUMP: dumpPath
+        }
+      });
+      terminal.show();
+      terminal.sendText(`mongorestore ${restoreArgs}`, true);
+    }),
+
     vscode.commands.registerCommand('mongoCompass.exportCollection', async (arg?: CollectionNode) => {
       const { ns, connId } = await resolveNamespace(connectionManager, arg);
       if (!ns || !connId) {
@@ -1172,6 +1272,19 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
       );
     }),
 
+    vscode.commands.registerCommand('mongoCompass.showPerformanceMetrics', async () => {
+      const connection = await requireConnection(connectionManager);
+      DataPanel.open(
+        context.extensionUri,
+        connectionManager,
+        s.history,
+        s.myQueries,
+        'performanceMetrics',
+        { connectionId: connection.options.id },
+        `Performance Metrics — ${connection.options.name}`
+      );
+    }),
+
     vscode.commands.registerCommand('mongoCompass.showCurrentOp', async () => {
       const connection = await requireConnection(connectionManager);
       DataPanel.open(
@@ -1227,25 +1340,19 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
       if (!database) {
         return;
       }
-      const commandText = await vscode.window.showInputBox({
-        prompt: `Run command on ${database} (EJSON)`,
-        value: '{ "ping": 1 }'
-      });
-      if (!commandText) {
-        return;
-      }
-      try {
-        const command = parseShellBSON(commandText);
-        const service = new DataService(connection.client, connection.options.id);
-        const result = await service.runCommand(database, command);
-        const doc = await vscode.workspace.openTextDocument({
-          content: EJSON.stringify(result, undefined, 2, { relaxed: false }),
-          language: 'json'
-        });
-        await vscode.window.showTextDocument(doc);
-      } catch (err) {
-        void vscode.window.showErrorMessage(`Command failed: ${(err as Error).message}`);
-      }
+      DataPanel.open(
+        context.extensionUri,
+        connectionManager,
+        s.history,
+        s.myQueries,
+        'databaseCommand',
+        {
+          connectionId: connection.options.id,
+          database,
+          extra: { commandText: '{\n  ping: 1\n}' }
+        },
+        `Database Command — ${database}`
+      );
     }),
 
     vscode.commands.registerCommand('mongoCompass.killOp', async () => {

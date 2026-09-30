@@ -39,6 +39,12 @@ const TOOLS: ToolItem[] = [
     command: 'mongoCompass.showServerStatus'
   },
   {
+    label: 'Performance Metrics',
+    description: 'Live operations, network, memory and hotspots',
+    icon: 'graph-line',
+    command: 'mongoCompass.showPerformanceMetrics'
+  },
+  {
     label: 'Current Operations',
     description: 'Running operations, with kill support',
     icon: 'pulse',

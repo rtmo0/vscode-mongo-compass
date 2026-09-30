@@ -131,6 +131,14 @@ export class DataPanel extends BaseWebviewPanel {
         return this.loadStats();
       case 'serverStatus':
         return this.loadServerStatus();
+      case 'performanceMetrics':
+        return this.loadPerformanceSample();
+      case 'databaseCommand':
+        return {
+          database: this.context.database,
+          commandText: String(this.context.extra?.commandText ?? '{\n  ping: 1\n}'),
+          result: null
+        };
       case 'queryHistory':
         return { entries: this.history.all };
       case 'savedQueries':
@@ -224,6 +232,23 @@ export class DataPanel extends BaseWebviewPanel {
     return { inprog: (result.inprog ?? []) as Document[], error: result.error };
   }
 
+  private async loadPerformanceSample(): Promise<unknown> {
+    const service = await this.service();
+    const connection = this.connectionManager.get(this.context.connectionId);
+    const [serverStatus, currentOp, top] = await Promise.all([
+      service.serverStatus(),
+      service.currentOp(false).catch(() => ({ inprog: [] })),
+      service.runCommand('admin', { top: 1 }).catch(() => ({ totals: {} }))
+    ]);
+    return {
+      sampledAt: Date.now(),
+      connectionName: connection?.options.name,
+      serverStatus,
+      currentOp: (currentOp.inprog ?? []) as Document[],
+      top: (top.totals ?? {}) as Document
+    };
+  }
+
   private registerHandlers(): void {
     this.registerHandler('ready', (_msg, respond) => {
       void this.pushInitialData();
@@ -233,6 +258,10 @@ export class DataPanel extends BaseWebviewPanel {
     this.registerHandler('refresh', async (_msg, respond) => {
       const data = await this.loadData();
       respond({ data });
+    });
+
+    this.registerHandler('performanceSample', async (_msg, respond) => {
+      respond({ data: await this.loadPerformanceSample() });
     });
 
     // ── indexes ──
@@ -427,6 +456,10 @@ function defaultTitle(kind: ViewKind): string {
       return 'Statistics';
     case 'serverStatus':
       return 'Server Status';
+    case 'performanceMetrics':
+      return 'Performance Metrics';
+    case 'databaseCommand':
+      return 'Database Command';
     case 'queryHistory':
       return 'Query History';
     case 'savedQueries':

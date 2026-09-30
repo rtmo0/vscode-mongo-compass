@@ -60,20 +60,33 @@ export class ConnectionNode extends BaseNode {
           : host;
 
     item.contextValue = `connection.${state}`;
-    item.tooltip = buildConnectionTooltip(options.name, options.connectionString, state, topology, error, options.notes);
+    item.tooltip = buildConnectionTooltip(
+      options.name,
+      options.connectionString,
+      state,
+      topology,
+      error,
+      options.notes,
+      options.color
+    );
+
+    const selectedColor = connectionThemeColor(options.color);
 
     switch (state) {
       case 'connected':
-        item.iconPath = new vscode.ThemeIcon('database', new vscode.ThemeColor('charts.green'));
+        item.iconPath = new vscode.ThemeIcon(
+          'database',
+          selectedColor ?? new vscode.ThemeColor('charts.green')
+        );
         break;
       case 'connecting':
-        item.iconPath = new vscode.ThemeIcon('sync~spin');
+        item.iconPath = new vscode.ThemeIcon('sync~spin', selectedColor);
         break;
       case 'error':
         item.iconPath = new vscode.ThemeIcon('error', new vscode.ThemeColor('charts.red'));
         break;
       default:
-        item.iconPath = new vscode.ThemeIcon('plug');
+        item.iconPath = new vscode.ThemeIcon('plug', selectedColor);
         break;
     }
 
@@ -231,7 +244,7 @@ export class CollectionNode extends BaseNode {
   override getTreeItem(): vscode.TreeItem {
     const item = new vscode.TreeItem(
       this.collection.name,
-      vscode.TreeItemCollapsibleState.Collapsed
+      vscode.TreeItemCollapsibleState.None
     );
     const isView = this.collection.type === 'view';
     const isTimeSeries = this.collection.type === 'timeseries';
@@ -257,10 +270,7 @@ export class CollectionNode extends BaseNode {
   }
 
   override getChildren(): BaseNode[] {
-    return [
-      new IndexesNode(this.connection, this.namespace),
-      new SearchIndexesNode(this.connection, this.namespace)
-    ];
+    return [];
   }
 }
 
@@ -502,12 +512,16 @@ function buildConnectionTooltip(
   state: string,
   topology?: { serverVersion: string; topologyType: string; isAtlas: boolean },
   error?: string,
-  notes?: string
+  notes?: string,
+  color?: string
 ): vscode.MarkdownString {
   const md = new vscode.MarkdownString();
   md.appendMarkdown(`**${name}**\n\n`);
   md.appendMarkdown(`- State: \`${state}\`\n`);
   md.appendMarkdown(`- URI: \`${redactUri(connectionString)}\`\n`);
+  if (color) {
+    md.appendMarkdown(`- Color: **${color}**\n`);
+  }
   if (topology) {
     md.appendMarkdown(`- Server: v${topology.serverVersion} (${topology.topologyType})\n`);
     if (topology.isAtlas) {
@@ -521,6 +535,18 @@ function buildConnectionTooltip(
     md.appendMarkdown(`\n_${notes}_\n`);
   }
   return md;
+}
+
+function connectionThemeColor(color?: string): vscode.ThemeColor | undefined {
+  const colorIds: Record<string, string> = {
+    green: 'charts.green',
+    blue: 'charts.blue',
+    red: 'charts.red',
+    orange: 'charts.orange',
+    purple: 'charts.purple'
+  };
+  const colorId = color ? colorIds[color] : undefined;
+  return colorId ? new vscode.ThemeColor(colorId) : undefined;
 }
 
 function buildIndexTooltip(index: IndexInfo): vscode.MarkdownString {

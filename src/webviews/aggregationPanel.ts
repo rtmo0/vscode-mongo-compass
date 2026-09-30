@@ -167,12 +167,12 @@ export class AggregationPanel extends BaseWebviewPanel {
 
     this.registerHandler('preview', async (msg, respond) => {
       const payload = msg.payload as { stages: StagePayload[]; upToStageId?: string };
-      await this.runPreview(payload.stages, payload.upToStageId, respond);
+      await this.runPipeline(payload.stages, payload.upToStageId, false, respond);
     });
 
     this.registerHandler('runAll', async (msg, respond) => {
       const payload = msg.payload as { stages: StagePayload[] };
-      await this.runPreview(payload.stages, undefined, respond);
+      await this.runPipeline(payload.stages, undefined, true, respond);
     });
 
     this.registerHandler('cancel', () => {
@@ -182,6 +182,7 @@ export class AggregationPanel extends BaseWebviewPanel {
     this.registerHandler('count', async (msg, respond) => {
       const payload = msg.payload as { stages: StagePayload[] };
       const pipeline = this.buildPipeline(payload.stages);
+      this.assertReadOnlyPipeline(pipeline, 'Count');
       const service = await this.service();
       const count = await service.aggregateCount(this.namespace, pipeline);
       respond({ count });
@@ -190,6 +191,7 @@ export class AggregationPanel extends BaseWebviewPanel {
     this.registerHandler('explain', async (msg, respond) => {
       const payload = msg.payload as { stages: StagePayload[] };
       const pipeline = this.buildPipeline(payload.stages);
+      this.assertReadOnlyPipeline(pipeline, 'Explain');
       const service = await this.service();
       const explain = await service.explainAggregate(this.namespace, pipeline);
       this.history.add({
@@ -289,9 +291,16 @@ export class AggregationPanel extends BaseWebviewPanel {
     return this.stages.find((s) => s.id === id);
   }
 
-  private async runPreview(
+  private assertReadOnlyPipeline(pipeline: Document[], action: string): void {
+    if (pipeline.some((stage) => '$out' in stage || '$merge' in stage)) {
+      throw new Error(`${action} is unavailable for pipelines containing $out or $merge.`);
+    }
+  }
+
+  private async runPipeline(
     stages: StagePayload[],
     upToStageId: string | undefined,
+    executeOutputStages: boolean,
     respond: (payload: unknown) => void
   ): Promise<void> {
     const started = Date.now();
@@ -321,11 +330,37 @@ export class AggregationPanel extends BaseWebviewPanel {
       const config = getConfig();
 
       if (hasOutputStage) {
+        if (executeOutputStages) {
+          await service.aggregate(this.namespace, pipeline, {}, {
+            signal: this.abortController.signal
+          });
+          this.history.add({
+            connectionId: this.connectionId,
+            connectionName: this.connectionName(),
+            database: this.namespace.database,
+            collection: this.namespace.collection,
+            kind: 'aggregate',
+            text: EJSON.stringify(pipeline),
+            pipelineText: EJSON.stringify(pipeline),
+            status: 'success',
+            count: null,
+            elapsedMS: Date.now() - started
+          });
+          respond({
+            documents: [],
+            count: null,
+            stageId: upToStageId,
+            warning: 'Pipeline completed. $out/$merge wrote results to the target collection.',
+            elapsedMS: Date.now() - started
+          });
+          this.post('refreshExplorer');
+          return;
+        }
         respond({
           documents: [],
           stageId: upToStageId,
           warning:
-            'The pipeline ends with $out/$merge which writes to a collection. Preview is disabled for output stages — run it explicitly to persist results.',
+            'Preview is disabled because this pipeline contains $out/$merge. Use Run to execute the write operation.',
           elapsedMS: 0
         });
         return;

@@ -125,6 +125,24 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "mongoCompass.refreshDatabases",
+        "title": "Refresh Databases",
+        "category": "MongoDB",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mongoCompass.refreshCollections",
+        "title": "Refresh Collections",
+        "category": "MongoDB",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mongoCompass.refreshCollection",
+        "title": "Refresh",
+        "category": "MongoDB",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "mongoCompass.createDatabase",
         "title": "Create Database…",
         "category": "MongoDB",
@@ -227,6 +245,12 @@
         "icon": "$(import)"
       },
       {
+        "command": "mongoCompass.restoreDatabase",
+        "title": "Restore Database from Dump…",
+        "category": "MongoDB",
+        "icon": "$(cloud-download)"
+      },
+      {
         "command": "mongoCompass.insertDocument",
         "title": "Insert Document…",
         "category": "MongoDB",
@@ -255,6 +279,12 @@
         "title": "Server Status",
         "category": "MongoDB",
         "icon": "$(dashboard)"
+      },
+      {
+        "command": "mongoCompass.showPerformanceMetrics",
+        "title": "View Performance Metrics",
+        "category": "MongoDB",
+        "icon": "$(graph-line)"
       },
       {
         "command": "mongoCompass.showCurrentOp",
@@ -297,6 +327,12 @@
         "title": "Run Database Command…",
         "category": "MongoDB",
         "icon": "$(terminal-cmd)"
+      },
+      {
+        "command": "mongoCompass.openMongosh",
+        "title": "Open mongosh Console",
+        "category": "MongoDB",
+        "icon": "$(terminal)"
       },
       {
         "command": "mongoCompass.killOp",
@@ -342,7 +378,22 @@
         },
         {
           "command": "mongoCompass.refreshNode",
-          "when": "view == mongoCompass.explorer && viewItem =~ /^(connection\\.connected|database|collections|indexes)/",
+          "when": "view == mongoCompass.explorer && viewItem == indexes",
+          "group": "inline@2"
+        },
+        {
+          "command": "mongoCompass.refreshDatabases",
+          "when": "view == mongoCompass.explorer && viewItem == connection.connected",
+          "group": "inline@2"
+        },
+        {
+          "command": "mongoCompass.refreshCollections",
+          "when": "view == mongoCompass.explorer && viewItem == database",
+          "group": "inline@2"
+        },
+        {
+          "command": "mongoCompass.refreshCollection",
+          "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
           "group": "inline@2"
         },
         {
@@ -367,7 +418,7 @@
         },
         {
           "command": "mongoCompass.createDatabase",
-          "when": "view == mongoCompass.explorer && viewItem == connection.connected",
+          "when": "view == mongoCompass.explorer && viewItem == databases",
           "group": "2_create@1"
         },
         {
@@ -386,19 +437,19 @@
           "group": "3_stats@2"
         },
         {
+          "command": "mongoCompass.openMongosh",
+          "when": "view == mongoCompass.explorer && viewItem == database",
+          "group": "inline@1"
+        },
+        {
           "command": "mongoCompass.createCollection",
-          "when": "view == mongoCompass.explorer && viewItem =~ /^(database|collections)/",
+          "when": "view == mongoCompass.explorer && (viewItem == database || viewItem == collections)",
           "group": "2_create@1"
         },
         {
-          "command": "mongoCompass.createView",
-          "when": "view == mongoCompass.explorer && viewItem =~ /^(database|collections)/",
-          "group": "2_create@2"
-        },
-        {
-          "command": "mongoCompass.openDocuments",
+          "command": "mongoCompass.openMongosh",
           "when": "view == mongoCompass.explorer && viewItem =~ /^collection/",
-          "group": "inline@1"
+          "group": "inline@3"
         },
         {
           "command": "mongoCompass.openAggregation",
@@ -437,8 +488,13 @@
         },
         {
           "command": "mongoCompass.importCollection",
-          "when": "view == mongoCompass.explorer && viewItem =~ /^(collection|database|collections)/",
+          "when": "view == mongoCompass.explorer && (viewItem == collection || viewItem == collection.view || viewItem == collection.timeseries || viewItem == database || viewItem == collections)",
           "group": "4_data@2"
+        },
+        {
+          "command": "mongoCompass.restoreDatabase",
+          "when": "view == mongoCompass.explorer && viewItem == databases",
+          "group": "4_data@1"
         },
         {
           "command": "mongoCompass.duplicateCollection",

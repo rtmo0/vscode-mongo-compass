@@ -243,6 +243,8 @@ export type ViewKind =
   | 'explain'
   | 'stats'
   | 'serverStatus'
+  | 'performanceMetrics'
+  | 'databaseCommand'
   | 'queryHistory'
   | 'savedQueries'
   | 'currentOp';
