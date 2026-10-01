@@ -2,7 +2,7 @@
   "name": "mongo-compass",
   "displayName": "MongoDB Explorer & Compass Tools",
   "description": "Explore MongoDB, edit documents, build aggregation pipelines, manage indexes, analyze schemas and inspect performance without leaving VS Code.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "samarin-aa-aka-rtm00",
   "icon": "resources/mongodb.png",
   "license": "SEE LICENSE IN LICENSE",

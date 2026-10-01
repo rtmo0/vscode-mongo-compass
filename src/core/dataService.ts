@@ -85,16 +85,21 @@ export class DataService {
     }
   }
 
-  async currentOp(includeSystem = true): Promise<Document> {
-    return this.client.db('admin').command({
-      currentOp: 1,
-      $all: includeSystem,
-      localOps: false
-    });
+  async currentOp(): Promise<Document> {
+    const inprog = await this.client.db('admin').aggregate([
+      {
+        $currentOp: {
+          allUsers: true,
+          idleConnections: false,
+          truncateOps: false
+        }
+      }
+    ]).toArray();
+    return { inprog };
   }
 
   async killOp(opId: number): Promise<Document> {
-    return this.client.db('admin').command({ killOp: opId });
+    return this.client.db('admin').command({ killOp: 1, id: opId });
   }
 
   async ping(): Promise<Document> {
@@ -327,12 +332,9 @@ export class DataService {
     options: AggregateOptions = {}
   ): Promise<ExplainSummary> {
     const started = Date.now();
-    const raw = await this.collection(ns).aggregate(pipeline, {
-      ...options,
-      explain: true
-    } as AggregateOptions & { explain: boolean });
-    const doc = Array.isArray(raw) ? { stages: raw } : (raw as unknown as Document);
-    return { ...summarizeExplain(doc, ns.toString()), elapsedMS: Date.now() - started };
+    const cursor = this.collection(ns).aggregate(pipeline, options);
+    const raw = await cursor.explain('executionStats');
+    return { ...summarizeExplain(raw, ns.toString()), elapsedMS: Date.now() - started };
   }
 
   // ───────────────────────────── indexes ─────────────────────────────

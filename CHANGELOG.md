@@ -2,6 +2,26 @@
 
 All notable changes to this extension are documented in this file.
 
+## 0.3.0 - 2026-10-01
+
+### Added
+
+- Compass-style slow-operation monitoring with complete operation details.
+- Operation termination from Performance Metrics.
+- Stable rolling visibility for recently observed operations.
+
+### Changed
+
+- Performance Metrics now uses `$currentOp` and CPU-normalized collection load.
+- Live metric updates preserve scrolling and avoid refreshing the whole screen.
+- Aggregation Explain now uses execution statistics correctly.
+- JSON field names are rendered in bold.
+
+### Fixed
+
+- Corrected the MongoDB `killOp` command format.
+- Improved visibility and sorting of long-running shard and time-series bucket queries.
+
 ## 0.2.0 - 2026-10-01
 
 ### Added

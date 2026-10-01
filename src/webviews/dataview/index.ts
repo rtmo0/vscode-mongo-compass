@@ -59,6 +59,7 @@ interface PerformanceSampleData {
   serverStatus: Record<string, unknown>;
   currentOp: Array<Record<string, unknown>>;
   top: Record<string, unknown>;
+  cpuCores?: number;
 }
 
 interface PerformancePoint {
@@ -70,10 +71,32 @@ interface PerformancePoint {
   memory: Record<string, number>;
 }
 
+interface TopActivityRow {
+  operation: string;
+  namespace: string;
+  micros: number;
+  count: number;
+  observedAt?: number;
+  active?: boolean;
+  opId?: number;
+  raw?: Record<string, unknown>;
+}
+
+interface CollectionActivityRow {
+  namespace: string;
+  micros: number;
+  loadPercent: number;
+  readPercent: number;
+  writePercent: number;
+}
+
 let performanceTimer: ReturnType<typeof setInterval> | undefined;
 let performancePaused = false;
 let previousPerformanceSample: PerformanceSampleData | undefined;
 let performanceHistory: PerformancePoint[] = [];
+let latestTopOperations: TopActivityRow[] = [];
+const recentTopOperations = new Map<string, TopActivityRow>();
+let latestCollectionActivity: CollectionActivityRow[] = [];
 let databaseCommandTextarea: HTMLTextAreaElement | undefined;
 
 // ───────────────────────────── init ─────────────────────────────
@@ -962,14 +985,24 @@ async function pollPerformanceSample(): Promise<void> {
     const result = await request<{ data: PerformanceSampleData }>('performanceSample');
     state.data = result.data;
     ingestPerformanceSample(result.data);
-    render();
+    updatePerformanceView();
   } catch (err) {
     statusTextEl.textContent = (err as Error).message;
     statusTextEl.classList.add('error');
   }
 }
 
+function updatePerformanceView(): void {
+  const scrollTop = contentEl.scrollTop;
+  const current = contentEl.querySelector<HTMLElement>('.mc-performance');
+  const next = renderPerformanceMetrics();
+  if (current) current.replaceWith(next);
+  else contentEl.replaceChildren(next);
+  contentEl.scrollTop = scrollTop;
+}
+
 function ingestPerformanceSample(sample: PerformanceSampleData): void {
+  rememberCurrentOperations(sample.currentOp ?? [], sample.sampledAt);
   const previous = previousPerformanceSample;
   previousPerformanceSample = sample;
   if (!previous) return;
@@ -984,6 +1017,8 @@ function ingestPerformanceSample(sample: PerformanceSampleData): void {
   const currentMemory = objectValue(currentStatus.mem);
   const currentExtra = objectValue(currentStatus.opcountersRepl);
   const previousExtra = objectValue(previousStatus.opcountersRepl);
+  const topActivity = calculateTopActivity(sample.top, previous.top, seconds, sample.cpuCores ?? 1);
+  latestCollectionActivity = topActivity.collections;
 
   performanceHistory.push({
     sampledAt: sample.sampledAt,
@@ -1159,18 +1194,10 @@ function metricChart(title: string, unit: string, group: keyof PerformancePoint,
   return card;
 }
 
-function renderHottestCollections(sample: PerformanceSampleData): HTMLElement {
+function renderHottestCollections(_sample: PerformanceSampleData): HTMLElement {
   const card = el('section', { className: 'mc-metric-card mc-metric-table-card' });
-  card.append(el('div', { className: 'mc-metric-title' }, el('strong', { text: 'Hottest Collections' }), el('span', { text: 'total time' })));
-  const rows = Object.entries(sample.top ?? {})
-    .filter(([namespace]) => !namespace.startsWith('admin.') && !namespace.startsWith('config.') && !namespace.startsWith('local.'))
-    .map(([namespace, raw]) => {
-      const total = objectValue(objectValue(raw).total);
-      return { namespace, micros: numberValue(total.time) };
-    })
-    .sort((a, b) => b.micros - a.micros)
-    .slice(0, 8);
-  const totalMicros = rows.reduce((sum, row) => sum + row.micros, 0);
+  card.append(el('div', { className: 'mc-metric-title' }, el('strong', { text: 'Hottest Collections' }), el('span', { text: 'system load' })));
+  const rows = latestCollectionActivity.slice(0, 8);
   const table = el('table', { className: 'mc-table mc-performance-table' });
   table.append(el('thead', {}, el('tr', {},
     el('th', { text: 'Namespace' }),
@@ -1179,12 +1206,12 @@ function renderHottestCollections(sample: PerformanceSampleData): HTMLElement {
   )));
   const body = el('tbody');
   for (const row of rows) {
-    const percent = totalMicros > 0 ? row.micros / totalMicros * 100 : 0;
+    const percent = row.loadPercent;
     const loadFill = el('span', { className: 'mc-load-fill' });
-    loadFill.style.width = `${percent.toFixed(1)}%`;
+    loadFill.style.width = `${Math.min(percent, 100).toFixed(1)}%`;
     body.append(el('tr', {},
       el('td', { text: row.namespace, title: row.namespace }),
-      el('td', {},
+      el('td', { title: `Read ${row.readPercent.toFixed(0)}% · Write ${row.writePercent.toFixed(0)}%` },
         el('div', { className: 'mc-load-cell' },
           el('div', { className: 'mc-load-track' }, loadFill),
           el('strong', { text: `${percent.toFixed(1)}%` })
@@ -1197,23 +1224,246 @@ function renderHottestCollections(sample: PerformanceSampleData): HTMLElement {
   table.append(body); card.append(table); return card;
 }
 
-function renderSlowOperations(sample: PerformanceSampleData): HTMLElement {
+function renderSlowOperations(_sample: PerformanceSampleData): HTMLElement {
   const card = el('section', { className: 'mc-metric-card mc-metric-table-card' });
-  card.append(el('div', { className: 'mc-metric-title' }, el('strong', { text: 'Slowest Operations' }), el('span', { text: 'currently running' })));
-  const operations = [...(sample.currentOp ?? [])]
-    .filter((operation) => numberValue(operation.secs_running ?? operation.microsecs_running) > 0)
-    .sort((a, b) => numberValue(b.secs_running ?? b.microsecs_running) - numberValue(a.secs_running ?? a.microsecs_running))
-    .slice(0, 8);
+  card.append(el('div', { className: 'mc-metric-title' }, el('strong', { text: 'Slowest Operations' }), el('span', { text: 'current + recent' })));
+  const operations = latestTopOperations.slice(0, 8);
   const table = el('table', { className: 'mc-table mc-performance-table' });
   table.append(el('thead', {}, el('tr', {}, el('th', { text: 'Operation' }), el('th', { text: 'Namespace' }), el('th', { text: 'Time' }))));
   const body = el('tbody');
-  for (const operation of operations) body.append(el('tr', {},
-    el('td', { text: String(operation.op ?? operation.desc ?? 'command') }),
-    el('td', { text: String(operation.ns ?? '—') }),
-    el('td', { text: operation.secs_running !== undefined ? `${numberValue(operation.secs_running).toFixed(1)} s` : `${(numberValue(operation.microsecs_running) / 1e6).toFixed(1)} s` })
-  ));
-  if (!operations.length) body.append(el('tr', {}, el('td', { text: 'No running operations', colSpan: 3 })));
+  for (const operation of operations) {
+    const row = el('tr', {
+      className: 'mc-performance-operation-row',
+      tabIndex: 0,
+      title: operation.raw ? 'Open operation details' : 'Open sampled operation details'
+    },
+      el('td', { text: operation.active ? `${operation.operation} • active` : operation.operation }),
+      el('td', { text: operation.namespace, title: operation.namespace }),
+      el('td', { text: formatDurationMicros(operation.micros) })
+    );
+    row.setAttribute('role', 'button');
+    row.addEventListener('click', () => showOperationDetails(operation));
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        showOperationDetails(operation);
+      }
+    });
+    body.append(row);
+  }
+  if (!operations.length) body.append(el('tr', {}, el('td', { text: 'No operations completed or currently running', colSpan: 3 })));
   table.append(body); card.append(table); return card;
+}
+
+function showOperationDetails(operation: TopActivityRow): void {
+  clear(modalRoot);
+  const backdrop = el('div', { className: 'mc-modal-backdrop' });
+  const modal = el('div', { className: 'mc-modal mc-operation-details' });
+  const close = (): void => clear(modalRoot);
+  const closeButton = el('button', { className: 'mc-btn', text: '✕ Close' });
+  closeButton.addEventListener('click', close);
+
+  const heading = el('div', { className: 'mc-operation-details-heading' },
+    el('h3', { text: 'Operation details' }),
+    closeButton
+  );
+  const summary = el('div', { className: 'mc-operation-details-summary' },
+    el('strong', { text: operation.operation.toUpperCase() }),
+    el('span', { text: operation.namespace }),
+    el('span', { className: 'spacer' }),
+    el('strong', { text: formatDurationMicros(operation.micros) })
+  );
+  const raw = operation.raw;
+  const details = el('dl', { className: 'mc-operation-details-grid' });
+  const addDetail = (label: string, value: unknown): void => {
+    details.append(el('dt', { text: label }), el('dd', { text: String(value ?? '—') }));
+  };
+  addDetail('OPID', operation.opId);
+  addDetail('Client', raw?.client);
+  addDetail('Active', operation.active ?? raw?.active ?? Boolean(raw));
+  addDetail('Wait lock', raw?.waitingForLock ?? raw?.waitingForLatch ?? false);
+  if (raw) {
+    addDetail('Host', raw.host);
+    addDetail('Description', raw.desc);
+    addDetail('Connection', raw.connectionId);
+    addDetail('Plan', raw.planSummary);
+  } else {
+    addDetail('Operations', operation.count);
+  }
+
+  const error = el('div', { className: 'mc-error-text' });
+  error.hidden = true;
+  modal.append(heading, summary, details, error);
+
+  if (operation.opId !== undefined && raw && operation.active) {
+    const killButton = el('button', { className: 'mc-btn danger', text: 'Kill operation' });
+    killButton.addEventListener('click', async () => {
+      if (!window.confirm(`Kill operation ${operation.opId}?`)) return;
+      killButton.disabled = true;
+      try {
+        await request('killOp', { opId: operation.opId });
+        const sample = state.data as PerformanceSampleData | null;
+        if (sample) sample.currentOp = sample.currentOp.filter((entry) => numericOpId(entry.opid) !== operation.opId);
+        const cached = recentTopOperations.get(`opid:${operation.opId}`);
+        if (cached) recentTopOperations.set(`opid:${operation.opId}`, {
+          ...cached,
+          active: false,
+          raw: cached.raw ? { ...cached.raw, active: false } : undefined
+        });
+        latestTopOperations = [...recentTopOperations.values()].sort((a, b) => b.micros - a.micros);
+        close();
+        render();
+      } catch (err) {
+        error.textContent = (err as Error).message;
+        error.hidden = false;
+        killButton.disabled = false;
+      }
+    });
+    modal.append(el('div', { className: 'mc-operation-kill-action' }, killButton));
+  } else {
+    modal.append(el('div', {
+      className: 'mc-muted',
+      text: 'This operation completed during the last sample and can no longer be killed.'
+    }));
+  }
+
+  if (raw) {
+    const output = el('pre', { className: 'mc-mono mc-operation-raw' });
+    output.innerHTML = highlightJson(JSON.stringify(raw, null, 2));
+    modal.append(output);
+  }
+
+  backdrop.addEventListener('click', (event) => { if (event.target === backdrop) close(); });
+  backdrop.append(modal);
+  modalRoot.append(backdrop);
+  closeButton.focus();
+}
+
+function rememberCurrentOperations(operations: Array<Record<string, unknown>>, sampledAt: number): void {
+  const retentionMs = 60_000;
+  const activeKeys = new Set<string>();
+
+  for (const [key, operation] of recentTopOperations) {
+    recentTopOperations.set(key, {
+      ...operation,
+      active: false,
+      raw: operation.raw ? { ...operation.raw, active: false } : undefined
+    });
+  }
+
+  for (const raw of operations) {
+    const namespace = currentOperationNamespace(raw);
+    const micros = currentOperationMicros(raw);
+    if (!isUserNamespace(namespace) || micros <= 0) continue;
+    const opId = numericOpId(raw.opid);
+    const operation = String(raw.op ?? raw.type ?? raw.desc ?? 'command');
+    const key = opId === undefined
+      ? `${operation}\u0000${namespace}\u0000${String(raw.client ?? raw.desc ?? '')}`
+      : `opid:${opId}`;
+    activeKeys.add(key);
+    recentTopOperations.set(key, {
+      operation,
+      namespace,
+      micros,
+      count: 1,
+      observedAt: sampledAt,
+      active: raw.active === undefined || String(raw.active) !== 'false',
+      opId,
+      raw
+    });
+  }
+
+  for (const [key, operation] of recentTopOperations) {
+    if (!activeKeys.has(key) && sampledAt - (operation.observedAt ?? sampledAt) > retentionMs) {
+      recentTopOperations.delete(key);
+    }
+  }
+  latestTopOperations = [...recentTopOperations.values()].sort((a, b) => b.micros - a.micros);
+}
+
+function calculateTopActivity(
+  currentTop: Record<string, unknown>,
+  previousTop: Record<string, unknown>,
+  seconds: number,
+  cpuCores: number
+): { operations: TopActivityRow[]; collections: CollectionActivityRow[] } {
+  const operationMetrics = [
+    ['queries', 'query'],
+    ['getmore', 'getmore'],
+    ['insert', 'insert'],
+    ['update', 'update'],
+    ['remove', 'delete'],
+    ['commands', 'command']
+  ] as const;
+  const operations: TopActivityRow[] = [];
+  const collections: CollectionActivityRow[] = [];
+
+  for (const [namespace, rawCurrent] of Object.entries(currentTop ?? {})) {
+    if (!isUserNamespace(namespace)) continue;
+    const current = objectValue(rawCurrent);
+    const previous = objectValue(previousTop?.[namespace]);
+    const currentTotal = objectValue(current.total);
+    const previousTotal = objectValue(previous.total);
+    const collectionMicros = counterDelta(currentTotal.time, previousTotal.time);
+    const readMicros = counterDelta(objectValue(current.readLock).time, objectValue(previous.readLock).time);
+    const writeMicros = counterDelta(objectValue(current.writeLock).time, objectValue(previous.writeLock).time);
+    if (collectionMicros > 0) collections.push({
+      namespace,
+      micros: collectionMicros,
+      loadPercent: collectionMicros * 100 / (Math.max(seconds, 0.001) * 1e6 * Math.max(cpuCores, 1)),
+      readPercent: readMicros * 100 / collectionMicros,
+      writePercent: writeMicros * 100 / collectionMicros
+    });
+
+    for (const [metric, operation] of operationMetrics) {
+      const currentMetric = objectValue(current[metric]);
+      const previousMetric = objectValue(previous[metric]);
+      const elapsedMicros = counterDelta(currentMetric.time, previousMetric.time);
+      const count = counterDelta(currentMetric.count, previousMetric.count);
+      if (elapsedMicros <= 0) continue;
+      operations.push({
+        operation,
+        namespace,
+        micros: elapsedMicros / Math.max(count, 1),
+        count
+      });
+    }
+  }
+
+  operations.sort((a, b) => b.micros - a.micros);
+  collections.sort((a, b) => b.micros - a.micros);
+  return { operations, collections };
+}
+
+function currentOperationNamespace(operation: Record<string, unknown>): string {
+  const namespace = String(operation.ns ?? '').trim();
+  if (namespace) return namespace;
+  const command = objectValue(operation.command);
+  const database = String(command.$db ?? '').trim();
+  const collection = command.collection ?? command.find ?? command.aggregate ?? command.count ?? command.distinct;
+  return database && typeof collection === 'string' ? `${database}.${collection}` : '—';
+}
+
+function currentOperationMicros(operation: Record<string, unknown>): number {
+  if (operation.microsecs_running !== undefined) return numberValue(operation.microsecs_running);
+  if (operation.secs_running !== undefined) return numberValue(operation.secs_running) * 1e6;
+  return 0;
+}
+
+function numericOpId(value: unknown): number | undefined {
+  const opId = Number(value);
+  return Number.isFinite(opId) ? opId : undefined;
+}
+
+function isUserNamespace(namespace: string): boolean {
+  return namespace !== '—' && namespace.includes('.') &&
+    !namespace.startsWith('admin.') &&
+    !namespace.startsWith('config.') &&
+    !namespace.startsWith('local.');
+}
+
+function counterDelta(current: unknown, previous: unknown): number {
+  return Math.max(0, numberValue(current) - numberValue(previous));
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

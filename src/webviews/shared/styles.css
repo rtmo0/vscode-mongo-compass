@@ -772,7 +772,7 @@ body {
 .mc-json-key {
   flex: 0 0 auto;
   color: var(--vscode-symbolIcon-keywordForeground, #c586c0);
-  font-weight: 500;
+  font-weight: 700;
 }
 
 .mc-json-document .tok-string,
@@ -1916,6 +1916,73 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mc-performance-operation-row {
+  cursor: pointer;
+}
+
+.mc-performance-operation-row:hover,
+.mc-performance-operation-row:focus {
+  background: var(--vscode-list-hoverBackground);
+  outline: none;
+}
+
+.mc-operation-details {
+  width: min(680px, 92vw);
+}
+
+.mc-operation-details-heading,
+.mc-operation-details-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mc-operation-details-heading {
+  justify-content: space-between;
+}
+
+.mc-operation-details-heading h3 {
+  margin: 0;
+}
+
+.mc-operation-details-summary {
+  padding: 9px 10px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-sideBar-background);
+}
+
+.mc-operation-details-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 7px 18px;
+  margin: 12px 10px;
+}
+
+.mc-operation-details-grid dt {
+  color: var(--vscode-descriptionForeground);
+  font-weight: 600;
+}
+
+.mc-operation-details-grid dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mc-operation-kill-action {
+  margin: 12px 10px;
+}
+
+.mc-operation-raw {
+  max-height: 48vh;
+  margin: 12px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-textCodeBlock-background);
+  white-space: pre-wrap;
 }
 
 .mc-load-cell {

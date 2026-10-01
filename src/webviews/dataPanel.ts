@@ -43,6 +43,7 @@ export class DataPanel extends BaseWebviewPanel {
   }
 
   private customTitle?: string;
+  private performanceCpuCores?: number;
 
   static open(
     extensionUri: vscode.Uri,
@@ -255,7 +256,7 @@ export class DataPanel extends BaseWebviewPanel {
 
   private async loadCurrentOp(): Promise<unknown> {
     const service = await this.service();
-    const result = await service.currentOp(true).catch((err) => ({
+    const result = await service.currentOp().catch((err) => ({
       error: (err as Error).message,
       inprog: []
     }));
@@ -265,11 +266,18 @@ export class DataPanel extends BaseWebviewPanel {
   private async loadPerformanceSample(): Promise<unknown> {
     const service = await this.service();
     const connection = this.connectionManager.get(this.context.connectionId);
-    const [serverStatus, currentOp, top] = await Promise.all([
+    const [serverStatus, currentOp, top, hostInfo] = await Promise.all([
       service.serverStatus(),
-      service.currentOp(false).catch(() => ({ inprog: [] })),
-      service.runCommand('admin', { top: 1 }).catch(() => ({ totals: {} }))
+      service.currentOp().catch(() => ({ inprog: [] })),
+      service.runCommand('admin', { top: 1 }).catch(() => ({ totals: {} })),
+      this.performanceCpuCores === undefined
+        ? service.runCommand('admin', { hostInfo: 1 }).catch(() => ({}))
+        : Promise.resolve({})
     ]);
+    const discoveredCpuCores = Number(((hostInfo as Document).system as Document | undefined)?.numCores);
+    if (Number.isFinite(discoveredCpuCores) && discoveredCpuCores > 0) {
+      this.performanceCpuCores = discoveredCpuCores;
+    }
     const configuredName = connection?.options.name.trim();
     const connectionName = configuredName && !/^mongodb(?:\+srv)?:\/\//i.test(configuredName)
       ? configuredName
@@ -281,7 +289,8 @@ export class DataPanel extends BaseWebviewPanel {
       connectionName,
       serverStatus,
       currentOp: (currentOp.inprog ?? []) as Document[],
-      top: (top.totals ?? {}) as Document
+      top: (top.totals ?? {}) as Document,
+      cpuCores: this.performanceCpuCores ?? 1
     };
   }
 
