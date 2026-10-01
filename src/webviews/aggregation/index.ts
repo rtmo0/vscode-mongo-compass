@@ -1,760 +1,360 @@
-import {
-  request,
-  on,
-  getState,
-  setState,
-  el,
-  clear,
-  highlightJson,
-  createSyntaxEditor,
-  createExplainView,
-  formatNumber,
-  debounce
-} from '../shared/client';
-
-interface Stage {
-  id: string;
-  text: string;
-  enabled: boolean;
-  expanded: boolean;
-  preview?: string[];
-  previewError?: string;
-  previewCount?: number | null;
-  isLoading?: boolean;
-}
-
-interface StageOperator {
-  name: string;
-  description: string;
-  template: string;
-}
+import { request, on, getState, setState, el, clear, createFieldTree, createJsonTree, formatJsonCell, createSyntaxEditor, createExplainView, debounce } from '../shared/client';
 
 interface UiState {
   namespace: string;
-  stages: Stage[];
-  autoPreview: boolean;
+  pipelineText: string;
   results: string[];
   count: number | null;
   elapsedMS: number;
   loading: boolean;
   error: string | null;
   warning: string | null;
+  panePercent: number;
+  viewMode: 'list' | 'table' | 'json';
 }
 
-let stageOperators: StageOperator[] = [];
-const previewVersions = new Map<string, number>();
-
-let state: UiState = getState<UiState>({
-  namespace: '—',
-  stages: [],
-  autoPreview: true,
-  results: [],
-  count: null,
-  elapsedMS: 0,
-  loading: false,
-  error: null,
-  warning: null
-});
-
+let state = getState<UiState>({ namespace: '—', pipelineText: '[\n  \n]', results: [], count: null, elapsedMS: 0, loading: false, error: null, warning: null, panePercent: 50, viewMode: 'list' });
+state.viewMode ??= 'list';
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
-
 const namespaceEl = $('namespace');
-const stagesEl = $('stages');
-const statusTextEl = $('status-text');
-const resultsBar = $('results-bar');
+const statusEl = $('status-text');
+const resultsEl = $('results');
 const resultsInfo = $('results-info');
-const autoPreviewEl = $<HTMLInputElement>('auto-preview');
+const editorHost = $('pipeline-editor');
+const suggestionsEl = $('pipeline-suggestions');
+const workspaceEl = $('pipeline-resizer').parentElement as HTMLElement;
+const resizerEl = $('pipeline-resizer');
 const modalRoot = $('modal-root');
+const editor = createSyntaxEditor(state.pipelineText, 12);
+editorHost.append(editor.element);
 
-// ───────────────────────────── init ─────────────────────────────
+function setPanePercent(value: number, persistState = false): void {
+  state.panePercent = Math.min(75, Math.max(25, Number.isFinite(value) ? value : 50));
+  workspaceEl.style.setProperty('--pipeline-editor-width', `${state.panePercent}%`);
+  resizerEl.setAttribute('aria-valuenow', String(Math.round(state.panePercent)));
+  if (persistState) setState(state);
+}
 
-on('init', (payload) => {
-  const init = payload as {
-    namespace: string;
-    stages: Stage[];
-    autoPreview: boolean;
-    stageOperators: StageOperator[];
-  };
-  state.namespace = init.namespace;
-  state.stages = init.stages ?? [];
-  state.autoPreview = init.autoPreview ?? true;
-  stageOperators = init.stageOperators ?? [];
-  autoPreviewEl.checked = state.autoPreview;
+function resizePanes(clientX: number): void {
+  const bounds = workspaceEl.getBoundingClientRect();
+  if (bounds.width > 0) setPanePercent((clientX - bounds.left) / bounds.width * 100);
+}
+
+resizerEl.addEventListener('pointerdown', (event) => {
+  resizerEl.setPointerCapture(event.pointerId);
+  resizePanes(event.clientX);
+});
+resizerEl.addEventListener('pointermove', (event) => {
+  if (resizerEl.hasPointerCapture(event.pointerId)) resizePanes(event.clientX);
+});
+resizerEl.addEventListener('pointerup', (event) => {
+  if (resizerEl.hasPointerCapture(event.pointerId)) resizerEl.releasePointerCapture(event.pointerId);
+  setPanePercent(state.panePercent, true);
+});
+resizerEl.addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+  event.preventDefault();
+  setPanePercent(state.panePercent + (event.key === 'ArrowLeft' ? -5 : 5), true);
+});
+setPanePercent(state.panePercent);
+const persist = debounce(() => {
+  setState(state);
+  void request('syncPipeline', { pipelineText: state.pipelineText }).catch(() => undefined);
+}, 200);
+
+const PIPELINE_COMPLETIONS = [
+  { label: '$match', detail: 'Filter documents', insert: '{\n    $match: {\n      field: value\n    }\n  }' },
+  { label: '$project', detail: 'Select or compute fields', insert: '{\n    $project: {\n      field: 1\n    }\n  }' },
+  { label: '$group', detail: 'Group documents', insert: '{\n    $group: {\n      _id: "$field",\n      count: { $sum: 1 }\n    }\n  }' },
+  { label: '$sort', detail: 'Sort documents', insert: '{\n    $sort: {\n      field: 1\n    }\n  }' },
+  { label: '$limit', detail: 'Limit result count', insert: '{ $limit: 100 }' },
+  { label: '$skip', detail: 'Skip documents', insert: '{ $skip: 0 }' },
+  { label: '$unwind', detail: 'Expand an array', insert: '{ $unwind: "$field" }' },
+  { label: '$lookup', detail: 'Join another collection', insert: '{\n    $lookup: {\n      from: "collection",\n      localField: "field",\n      foreignField: "_id",\n      as: "joined"\n    }\n  }' },
+  { label: '$addFields', detail: 'Add computed fields', insert: '{\n    $addFields: {\n      field: expression\n    }\n  }' },
+  { label: '$set', detail: 'Set computed fields', insert: '{\n    $set: {\n      field: expression\n    }\n  }' },
+  { label: '$unset', detail: 'Remove fields', insert: '{ $unset: ["field"] }' },
+  { label: '$count', detail: 'Count results', insert: '{ $count: "count" }' },
+  { label: '$facet', detail: 'Run multiple sub-pipelines', insert: '{\n    $facet: {\n      results: [],\n      total: [{ $count: "count" }]\n    }\n  }' },
+  { label: '$replaceRoot', detail: 'Replace the root document', insert: '{ $replaceRoot: { newRoot: "$field" } }' },
+  { label: '$sample', detail: 'Select random documents', insert: '{ $sample: { size: 10 } }' },
+  { label: '$sum', detail: 'Accumulator', insert: '$sum: 1' },
+  { label: '$avg', detail: 'Average accumulator', insert: '$avg: "$field"' },
+  { label: '$first', detail: 'First value accumulator', insert: '$first: "$field"' },
+  { label: '$last', detail: 'Last value accumulator', insert: '$last: "$field"' },
+  { label: '$push', detail: 'Array accumulator', insert: '$push: "$field"' },
+  { label: '$in', detail: 'Value is in array', insert: '$in: ["$field", []]' },
+  { label: '$gte', detail: 'Greater than or equal', insert: '$gte: value' },
+  { label: '$lte', detail: 'Less than or equal', insert: '$lte: value' }
+];
+let visibleCompletions: typeof PIPELINE_COMPLETIONS = [];
+let selectedCompletion = 0;
+
+function completionPrefix(): { start: number; text: string } | null {
+  const before = editor.textarea.value.slice(0, editor.textarea.selectionStart);
+  const match = /\$[A-Za-z]*$/.exec(before);
+  return match ? { start: before.length - match[0].length, text: match[0].toLowerCase() } : null;
+}
+
+function hideSuggestions(): void { suggestionsEl.hidden = true; clear(suggestionsEl); }
+
+function applyCompletion(index: number): void {
+  const prefix = completionPrefix();
+  const completion = visibleCompletions[index];
+  if (!prefix || !completion) return;
+  const textarea = editor.textarea;
+  const end = textarea.selectionStart;
+  textarea.setRangeText(completion.insert, prefix.start, end, 'end');
+  textarea.dispatchEvent(new Event('input'));
+  textarea.focus();
+  hideSuggestions();
+}
+
+function showSuggestions(): void {
+  const prefix = completionPrefix();
+  if (!prefix) { hideSuggestions(); return; }
+  visibleCompletions = PIPELINE_COMPLETIONS.filter((item) => item.label.toLowerCase().startsWith(prefix.text)).slice(0, 10);
+  if (!visibleCompletions.length) { hideSuggestions(); return; }
+  selectedCompletion = 0;
+  clear(suggestionsEl);
+  visibleCompletions.forEach((item, index) => {
+    const option = el('button', { className: `mc-pipeline-suggestion${index === 0 ? ' active' : ''}` });
+    option.append(el('strong', { text: item.label }), el('span', { text: item.detail }));
+    option.addEventListener('mousedown', (event) => { event.preventDefault(); applyCompletion(index); });
+    suggestionsEl.append(option);
+  });
+  suggestionsEl.hidden = false;
+}
+
+function updateSuggestionSelection(): void {
+  Array.from(suggestionsEl.children).forEach((child, index) => child.classList.toggle('active', index === selectedCompletion));
+}
+
+function payload(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  state.pipelineText = editor.textarea.value;
+  return { pipelineText: state.pipelineText, ...extra };
+}
+
+function initialize(value: { namespace: string; pipelineText: string }): void {
+  state.namespace = value.namespace;
+  state.pipelineText = value.pipelineText || '[\n  \n]';  editor.textarea.value = state.pipelineText || '[\n  \n]';
+  editor.textarea.dispatchEvent(new Event('input'));
   render();
+}
+
+on('init', (value) => initialize(value as { namespace: string; pipelineText: string }));
+void request('ready').then((value) => value && initialize(value as { namespace: string; pipelineText: string }));
+editor.textarea.addEventListener('input', () => {
+  state.pipelineText = editor.textarea.value;
+  showSuggestions();
   persist();
 });
-
-on('refreshExplorer', () => {
-  // no-op in webview; explorer refresh handled host-side
-});
-
-void request('ready').then((payload) => {
-  if (payload) {
-    const init = payload as { namespace: string; stages: Stage[]; autoPreview: boolean; stageOperators: StageOperator[] };
-    state.namespace = init.namespace;
-    state.stages = init.stages ?? [];
-    state.autoPreview = init.autoPreview ?? true;
-    stageOperators = init.stageOperators ?? [];
-    autoPreviewEl.checked = state.autoPreview;
-    render();
+editor.textarea.addEventListener('blur', () => setTimeout(hideSuggestions, 100));
+editor.textarea.addEventListener('keydown', (event) => {
+  if (!suggestionsEl.hidden && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
+    event.preventDefault();
+    if (event.key === 'ArrowDown') selectedCompletion = (selectedCompletion + 1) % visibleCompletions.length;
+    else if (event.key === 'ArrowUp') selectedCompletion = (selectedCompletion - 1 + visibleCompletions.length) % visibleCompletions.length;
+    else if (event.key === 'Escape') hideSuggestions();
+    else applyCompletion(selectedCompletion);
+    updateSuggestionSelection();
+    return;
   }
+  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void run(); }
 });
 
-// ───────────────────────────── toolbar ─────────────────────────────
+function parsedResults(): Record<string, unknown>[] {
+  return state.results.map((result) => JSON.parse(result) as Record<string, unknown>);
+}
 
-$('btn-run').addEventListener('click', () => void runAll());
-$('btn-cancel').addEventListener('click', () => void request('cancel'));
-$('btn-explain').addEventListener('click', () => void showExplain());
-$('btn-count').addEventListener('click', () => void runCount());
-$('btn-add').addEventListener('click', () => showAddStagePicker());
-$('btn-save').addEventListener('click', () => showSaveModal());
-$('btn-view').addEventListener('click', () => showCreateViewModal());
-$('btn-export').addEventListener('click', () => showExportModal());
-$('btn-shell').addEventListener('click', () => void copyShell());
+function setResultView(mode: 'list' | 'table' | 'json'): void {
+  state.viewMode = mode;
+  setState(state);
+  render();
+}
 
-autoPreviewEl.addEventListener('change', () => {
-  state.autoPreview = autoPreviewEl.checked;
-  persist();
-});
+function renderResultViewButtons(): void {
+  for (const [id, mode] of [
+    ['btn-result-list', 'list'],
+    ['btn-result-table', 'table'],
+    ['btn-result-json', 'json']
+  ] as const) {
+    const button = $(id);
+    button.classList.toggle('active', state.viewMode === mode);
+    button.setAttribute('aria-pressed', String(state.viewMode === mode));
+  }
+}
 
-const persist = debounce(() => setState(state), 200);
+function renderResultList(documents: Record<string, unknown>[]): HTMLElement {
+  const container = el('div', { className: 'mc-document-list' });
+  documents.forEach((document, index) => {
+    const card = el('article', { className: 'mc-doc mc-aggregation-document' });
+    const tree = createFieldTree(document);
+    tree.classList.add('mc-doc-body');
+    card.append(
+      el('div', { className: 'mc-doc-header' },
+        el('span', { className: 'mc-chip', text: `#${index + 1}` }),
+        el('span', { className: 'doc-id', text: formatJsonCell(document._id) })
+      ),
+      tree
+    );
+    container.append(card);
+  });
+  return container;
+}
 
-// ───────────────────────────── stage rendering ─────────────────────────────
+function renderResultTable(documents: Record<string, unknown>[]): HTMLElement {
+  const columns = [...new Set(documents.flatMap((document) => Object.keys(document)))];
+  const table = el('table', { className: 'mc-table mc-aggregation-grid' });
+  const header = el('tr', {}, el('th', { text: '#' }));
+  for (const column of columns) header.append(el('th', { text: column }));
+  table.append(el('thead', {}, header));
+  const body = el('tbody');
+  documents.forEach((document, index) => {
+    const row = el('tr', {}, el('td', { text: String(index + 1) }));
+    for (const column of columns) {
+      row.append(el('td', {
+        text: formatJsonCell(document[column], true),
+        title: formatJsonCell(document[column])
+      }));
+    }
+    body.append(row);
+  });
+  table.append(body);
+  return el('div', { className: 'mc-table-scroll' }, table);
+}
+
+function renderResultJson(documents: Record<string, unknown>[]): HTMLElement {
+  const container = el('div', { className: 'mc-json-list' });
+  documents.forEach((document, index) => {
+    const block = el('article', { className: 'mc-json-document mc-pipeline-result' });
+    block.append(
+      el('div', { className: 'mc-json-document-number', text: `Document ${index + 1}` }),
+      createJsonTree(document)
+    );
+    container.append(block);
+  });
+  return container;
+}
 
 function render(): void {
   namespaceEl.textContent = state.namespace;
-  renderStatus();
-  renderStages();
-  renderResultsBar();
-}
-
-function renderStatus(): void {
-  clear(statusTextEl);
-  if (state.loading) {
-    statusTextEl.append(el('span', { className: 'mc-spinner' }), ' Running pipeline…');
+  renderResultViewButtons();
+  clear(statusEl);
+  if (state.loading) statusEl.append(el('span', { className: 'mc-spinner' }), ' Running pipeline…');
+  else if (state.error) statusEl.append(el('span', { className: 'error', text: state.error }));
+  else statusEl.textContent = state.warning ?? (state.elapsedMS ? `Showing ${state.results.length}${state.count === null ? '' : ` of ${state.count}`} · ${state.elapsedMS} ms` : 'Ready');
+  resultsInfo.textContent = state.count === null
+    ? `${state.results.length} shown`
+    : `${state.results.length} of ${state.count} documents`;
+  clear(resultsEl);
+  if (state.loading) { resultsEl.append(el('div', { className: 'mc-empty' }, el('span', { className: 'mc-spinner' }), ' Executing pipeline…')); return; }
+  if (state.error) { resultsEl.append(el('div', { className: 'mc-empty error', text: state.error })); return; }
+  if (!state.results.length) {
+    resultsEl.append(el('div', {
+      className: 'mc-empty',
+      text: state.count === 0 ? 'The pipeline returned no documents.' : 'Run the pipeline to preview its output.'
+    }));
     return;
   }
-  if (state.error) {
-    statusTextEl.append(el('span', { className: 'error', text: state.error }));
-    return;
-  }
-  if (state.warning) {
-    statusTextEl.append(el('span', { text: state.warning }));
-    return;
-  }
-  const parts: string[] = [];
-  parts.push(`${state.stages.length} stage(s)`);
-  parts.push(`${state.stages.filter((s) => s.enabled).length} enabled`);
-  if (state.elapsedMS) {
-    parts.push(`${state.elapsedMS} ms`);
-  }
-  statusTextEl.textContent = parts.join(' · ');
-}
-
-function renderStages(): void {
-  clear(stagesEl);
-  if (state.stages.length === 0) {
-    stagesEl.append(
-      el(
-        'div',
-        { className: 'mc-empty' },
-        el('span', { text: 'No stages yet.' }),
-        el('span', { className: 'mc-muted', text: 'Click "Add Stage" to build your pipeline.' })
-      )
-    );
-    return;
-  }
-
-  state.stages.forEach((stage, index) => {
-    stagesEl.append(renderStage(stage, index));
-  });
-}
-
-function renderStage(stage: Stage, index: number): HTMLElement {
-  const card = el('div', { className: `mc-stage${stage.enabled ? '' : ' disabled'}` });
-
-  const header = el('div', { className: 'mc-stage-header' });
-  const stageName = detectStageName(stage.text);
-
-  const toggle = el('button', {
-    className: 'mc-btn icon-only',
-    text: stage.expanded ? '▾' : '▸',
-    title: 'Collapse/expand'
-  });
-  toggle.addEventListener('click', () => {
-    stage.expanded = !stage.expanded;
-    render();
-    persist();
-  });
-
-  const enableCheckbox = el('input') as HTMLInputElement;
-  enableCheckbox.type = 'checkbox';
-  enableCheckbox.checked = stage.enabled;
-  enableCheckbox.title = 'Enable/disable stage';
-  enableCheckbox.addEventListener('change', () => {
-    stage.enabled = enableCheckbox.checked;
-    syncStages();
-    render();
-    persist();
-    if (state.autoPreview) {
-      void previewUpTo(stage.id);
-    }
-  });
-
-  header.append(
-    toggle,
-    el('span', { className: 'mc-chip', text: `#${index + 1}` }),
-    enableCheckbox,
-    el('span', { className: 'stage-name', text: stageName }),
-    el('span', { className: 'spacer' })
-  );
-
-  const previewBtn = el('button', { className: 'mc-btn icon-only', text: '▶', title: 'Preview up to this stage' });
-  previewBtn.addEventListener('click', () => void previewUpTo(stage.id));
-
-  const helpBtn = el('button', { className: 'mc-btn icon-only', text: '?', title: 'Stage documentation' });
-  helpBtn.addEventListener('click', () => void openStageHelp(stageName));
-
-  const moveUp = el('button', { className: 'mc-btn icon-only', text: '↑', title: 'Move up' });
-  moveUp.addEventListener('click', () => moveStage(index, -1));
-  const moveDown = el('button', { className: 'mc-btn icon-only', text: '↓', title: 'Move down' });
-  moveDown.addEventListener('click', () => moveStage(index, 1));
-
-  const duplicateBtn = el('button', { className: 'mc-btn icon-only', text: '⧉', title: 'Duplicate stage' });
-  duplicateBtn.addEventListener('click', () => duplicateStage(index));
-
-  const deleteBtn = el('button', { className: 'mc-btn icon-only', text: '🗑', title: 'Delete stage' });
-  deleteBtn.addEventListener('click', () => deleteStage(index));
-
-  header.append(previewBtn, helpBtn, moveUp, moveDown, duplicateBtn, deleteBtn);
-  card.append(header);
-
-  if (stage.expanded) {
-    const body = el('div', { className: 'mc-stage-body' });
-
-    const editorWrap = el('div', { className: 'mc-field' });
-    editorWrap.append(el('label', { text: 'Stage' }));
-    const editor = createSyntaxEditor(stage.text, 8);
-    const textarea = editor.textarea;
-    textarea.addEventListener('input', () => {
-      stage.text = textarea.value;
-      persist();
-    });
-    const debouncedPreview = debounce(() => {
-      syncStages();
-      if (state.autoPreview) {
-        void previewUpTo(stage.id);
-      }
-    }, 600);
-    textarea.addEventListener('input', debouncedPreview);
-    editorWrap.append(editor.element);
-
-    const previewWrap = el('div', { className: 'mc-stage-preview' });
-    previewWrap.append(el('label', { className: 'mc-muted', text: 'Preview' }));
-    if (stage.isLoading) {
-      previewWrap.append(el('span', { className: 'mc-spinner' }));
-    } else if (stage.previewError) {
-      previewWrap.append(el('div', { className: 'mc-error-text', text: stage.previewError }));
-    } else if (stage.preview && stage.preview.length > 0) {
-      const pre = el('pre');
-      pre.innerHTML = highlightJson(stage.preview.map((p) => safeParse(p)));
-      previewWrap.append(pre);
-      if (stage.previewCount !== null && stage.previewCount !== undefined) {
-        previewWrap.append(
-          el('div', { className: 'mc-muted', text: `${formatNumber(stage.previewCount)} document(s) at this stage` })
-        );
-      }
-    } else {
-      previewWrap.append(el('div', { className: 'mc-muted', text: 'No preview yet.' }));
-    }
-
-    body.append(editorWrap, previewWrap);
-    card.append(body);
-  }
-
-  return card;
-}
-
-function renderResultsBar(): void {
-  if (state.results.length === 0 && state.count === null) {
-    resultsBar.style.display = 'none';
-    return;
-  }
-  resultsBar.style.display = 'flex';
-  const parts: string[] = [];
-  parts.push(`${formatNumber(state.results.length)} result(s) shown`);
-  if (state.count !== null) {
-    parts.push(`${formatNumber(state.count)} total`);
-  }
-  if (state.elapsedMS) {
-    parts.push(`${state.elapsedMS} ms`);
-  }
-  resultsInfo.textContent = parts.join(' · ');
-}
-
-// ───────────────────────────── stage operations ─────────────────────────────
-
-function detectStageName(text: string): string {
-  const match = /\$[a-zA-Z]+/.exec(text);
-  return match ? match[0] : '(empty)';
-}
-
-function safeParse(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
-function moveStage(index: number, delta: number): void {
-  const target = index + delta;
-  if (target < 0 || target >= state.stages.length) {
-    return;
-  }
-  const [stage] = state.stages.splice(index, 1);
-  state.stages.splice(target, 0, stage);
-  syncStages();
-  render();
+  const documents = parsedResults();
+  if (state.viewMode === 'table') resultsEl.append(renderResultTable(documents));
+  else if (state.viewMode === 'json') resultsEl.append(renderResultJson(documents));
+  else resultsEl.append(renderResultList(documents));
   persist();
 }
 
-function duplicateStage(index: number): void {
-  const source = state.stages[index];
-  const copy: Stage = {
-    ...source,
-    id: `stage-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    preview: undefined,
-    previewError: undefined,
-    previewCount: undefined
-  };
-  state.stages.splice(index + 1, 0, copy);
-  syncStages();
-  render();
-  persist();
-}
-
-function deleteStage(index: number): void {
-  state.stages.splice(index, 1);
-  syncStages();
-  render();
-  persist();
-}
-
-function addStage(template: string): void {
-  state.stages.push({
-    id: `stage-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    text: template,
-    enabled: true,
-    expanded: true
-  });
-  syncStages();
-  render();
-  persist();
-}
-
-function syncStages(): void {
-  void request('syncStages', {
-    stages: state.stages.map((s) => ({ id: s.id, text: s.text, enabled: s.enabled }))
-  });
-}
-
-// ───────────────────────────── execution ─────────────────────────────
-
-async function previewUpTo(stageId: string): Promise<void> {
-  const stage = state.stages.find((s) => s.id === stageId);
-  if (!stage) {
-    return;
-  }
-  stage.isLoading = true;
-  stage.previewError = undefined;
-  const previewVersion = (previewVersions.get(stageId) ?? 0) + 1;
-  previewVersions.set(stageId, previewVersion);
-  render();
-
+async function run(): Promise<void> {
+  state.loading = true; state.error = null; state.warning = null; render();
   try {
-    const result = (await request('preview', {
-      stages: state.stages.map((s) => ({ id: s.id, text: s.text, enabled: s.enabled })),
-      upToStageId: stageId
-    })) as {
-      documents: string[];
-      count: number | null;
-      error?: string;
-      warning?: string;
-      elapsedMS: number;
-    };
-    if (previewVersions.get(stageId) !== previewVersion) return;
-    stage.preview = result.documents ?? [];
-    stage.previewCount = result.count ?? null;
-    stage.previewError = result.error ?? result.warning ?? undefined;
-    state.elapsedMS = result.elapsedMS ?? 0;
-  } catch (err) {
-    if (previewVersions.get(stageId) !== previewVersion) return;
-    stage.previewError = (err as Error).message;
-  } finally {
-    if (previewVersions.get(stageId) !== previewVersion) return;
-    stage.isLoading = false;
-    render();
-    persist();
-  }
+    const result = await request('runAll', payload()) as { documents?: string[]; count?: number | null; elapsedMS?: number; warning?: string; error?: string };
+    if (result.error) throw new Error(result.error);
+    state.results = result.documents ?? []; state.count = result.count ?? null; state.elapsedMS = result.elapsedMS ?? 0; state.warning = result.warning ?? null;
+  } catch (error) { state.error = (error as Error).message; } finally { state.loading = false; render(); }
 }
 
-async function runAll(): Promise<void> {
-  state.loading = true;
-  state.error = null;
-  state.warning = null;
-  render();
+async function count(): Promise<void> {
+  try { const result = await request('count', payload()) as { count: number | null }; state.count = result.count; state.warning = result.count === null ? 'Count unavailable' : `${result.count} result(s)`; render(); }
+  catch (error) { state.error = (error as Error).message; render(); }
+}
 
+async function explain(): Promise<void> {
   try {
-    const result = (await request('runAll', {
-      stages: state.stages.map((s) => ({ id: s.id, text: s.text, enabled: s.enabled }))
-    })) as {
-      documents: string[];
-      count: number | null;
-      error?: string;
-      warning?: string;
-      elapsedMS: number;
-    };
-    state.results = result.documents ?? [];
-    state.count = result.count ?? null;
-    state.elapsedMS = result.elapsedMS ?? 0;
-    state.error = result.error ?? null;
-    state.warning = result.warning ?? null;
-    showResults(result.warning);
-  } catch (err) {
-    state.error = (err as Error).message;
-  } finally {
-    state.loading = false;
-    render();
-    persist();
-  }
+    const result = await request('explain', payload());
+    clear(resultsEl); resultsEl.append(createExplainView(result as never));
+    resultsInfo.textContent = 'Explain plan';
+  } catch (error) { state.error = (error as Error).message; render(); }
 }
 
-async function runCount(): Promise<void> {
+async function namedAction(type: 'savePipeline' | 'createView'): Promise<void> {
   try {
-    const result = (await request('count', {
-      stages: state.stages.map((s) => ({ id: s.id, text: s.text, enabled: s.enabled }))
-    })) as { count: number | null };
-    state.count = result.count;
-    render();
-    persist();
-  } catch (err) {
-    state.error = (err as Error).message;
+    const result = await request(type, payload()) as { cancelled?: boolean; name?: string };
+    if (result.cancelled) return;
+    state.warning = type === 'savePipeline' ? 'Pipeline saved.' : 'View created.';
     render();
   }
-}
-
-function showResults(message?: string): void {
-  const body = el('div');
-  if (message) body.append(el('div', { className: 'mc-insight', text: message }));
-  if (state.results.length > 0) {
-    const pre = el('pre', { className: 'mc-mono' });
-    pre.innerHTML = highlightJson(state.results.map((r) => safeParse(r)));
-    pre.style.maxHeight = '60vh';
-    pre.style.overflow = 'auto';
-    body.append(pre);
-  } else if (!message) {
-    body.append(el('div', { className: 'mc-muted', text: 'Pipeline completed with no returned documents.' }));
-  }
-  openModal({
-    title: `Pipeline results — ${state.namespace}`,
-    body,
-    primaryLabel: 'Close',
-    onPrimary: () => closeModal(),
-    hideSecondary: true
-  });
-}
-
-// ───────────────────────────── explain ─────────────────────────────
-
-async function showExplain(): Promise<void> {
-  state.loading = true;
-  render();
-  try {
-    const explain = (await request('explain', {
-      stages: state.stages.map((s) => ({ id: s.id, text: s.text, enabled: s.enabled }))
-    })) as {
-      tree: Array<{ stage: string; description: string; details: Record<string, string>; children: unknown[] }>;
-      insights: string[];
-      raw: Record<string, unknown>;
-    };
-    renderExplain(explain);
-  } catch (err) {
-    state.error = (err as Error).message;
-  } finally {
-    state.loading = false;
-    render();
-  }
-}
-
-function renderExplain(explain: {
-  tree: Array<{ stage: string; description: string; details: Record<string, string>; children: unknown[] }>;
-  insights: string[];
-  raw: Record<string, unknown>;
-}): void {
-  openModal({
-    title: `Explain — ${state.namespace}`,
-    body: createExplainView(explain as never),
-    primaryLabel: 'Close',
-    onPrimary: () => closeModal(),
-    hideSecondary: true
-  });
-}
-
-// ───────────────────────────── add stage picker ─────────────────────────────
-
-function showAddStagePicker(): void {
-  const body = el('div');
-  const search = el('input', { className: 'mc-input', placeholder: 'Filter stages…' }) as HTMLInputElement;
-  search.style.width = '100%';
-  search.style.marginBottom = '8px';
-  body.append(search);
-
-  const list = el('div');
-  list.style.maxHeight = '50vh';
-  list.style.overflow = 'auto';
-  body.append(list);
-
-  const renderList = (filter: string): void => {
-    clear(list);
-    for (const op of stageOperators) {
-      if (filter && !op.name.toLowerCase().includes(filter.toLowerCase()) && !op.description.toLowerCase().includes(filter.toLowerCase())) {
-        continue;
-      }
-      const row = el('div');
-      row.style.padding = '6px 8px';
-      row.style.cursor = 'pointer';
-      row.style.borderBottom = '1px solid var(--vscode-panel-border)';
-      row.append(
-        el('div', { className: 'mc-mono', text: op.name }),
-        el('div', { className: 'mc-muted', text: op.description })
-      );
-      row.addEventListener('click', () => {
-        addStage(op.template);
-        closeModal();
-      });
-      list.append(row);
-    }
-  };
-
-  search.addEventListener('input', () => renderList(search.value));
-  renderList('');
-
-  openModal({
-    title: 'Add aggregation stage',
-    body,
-    primaryLabel: 'Blank stage',
-    onPrimary: () => {
-      addStage('{\n  \n}');
-      closeModal();
-    },
-    hideSecondary: true
-  });
-}
-
-async function openStageHelp(stageName: string): Promise<void> {
-  try {
-    const help = (await request('stageHelp', { stage: stageName })) as { url: string; description: string };
-    const body = el('div');
-    body.append(el('p', { text: help.description || `Documentation for ${stageName}` }));
-    const link = el('a', { text: help.url, href: help.url }) as HTMLAnchorElement;
-    link.style.color = 'var(--vscode-textLink-foreground)';
-    body.append(link);
-    openModal({
-      title: `${stageName} documentation`,
-      body,
-      primaryLabel: 'Close',
-      onPrimary: () => closeModal(),
-      hideSecondary: true
-    });
-  } catch (err) {
-    state.error = (err as Error).message;
-    render();
-  }
-}
-
-// ───────────────────────────── save / view / export ─────────────────────────────
-
-function showSaveModal(): void {
-  openModal({
-    title: 'Save pipeline to My Queries',
-    body: textField('Pipeline name', `${state.namespace} pipeline`),
-    primaryLabel: 'Save',
-    onPrimary: async (getValue) => {
-      const name = getValue().trim();
-      if (!name) {
-        showFieldError('Name is required');
-        return;
-      }
-      try {
-        await request('savePipeline', {
-          name,
-          stages: state.stages.map((s) => ({ id: s.id, text: s.text, enabled: s.enabled }))
-        });
-        closeModal();
-        setStatusMessage(`Pipeline "${name}" saved.`);
-      } catch (err) {
-        showFieldError((err as Error).message);
-      }
-    }
-  });
-}
-
-function showCreateViewModal(): void {
-  openModal({
-    title: `Create view on ${state.namespace}`,
-    body: textField('View name', `${state.namespace.split('.')[1]}_view`),
-    primaryLabel: 'Create',
-    onPrimary: async (getValue) => {
-      const viewName = getValue().trim();
-      if (!viewName) {
-        showFieldError('View name is required');
-        return;
-      }
-      try {
-        await request('createView', {
-          viewName,
-          stages: state.stages.map((s) => ({ id: s.id, text: s.text, enabled: s.enabled }))
-        });
-        closeModal();
-        setStatusMessage(`View "${viewName}" created.`);
-      } catch (err) {
-        showFieldError((err as Error).message);
-      }
-    }
-  });
+  catch (error) { state.error = (error as Error).message; render(); }
 }
 
 function showExportModal(): void {
-  const languages = ['shell', 'javascript', 'typescript', 'python', 'java', 'csharp', 'go', 'php', 'ruby', 'rust', 'compass'];
-  const body = el('div');
+  clear(modalRoot);
   const select = el('select', { className: 'mc-select' }) as HTMLSelectElement;
-  for (const lang of languages) {
-    select.append(el('option', { value: lang, text: lang }));
+  for (const format of ['json', 'jsonl', 'csv']) {
+    select.append(el('option', { value: format, text: format.toUpperCase() }));
   }
-  body.append(el('div', { className: 'mc-field' }, el('label', { text: 'Language' }), select));
-  const output = el('pre', { className: 'mc-mono' });
-  output.style.marginTop = '12px';
-  output.style.maxHeight = '320px';
-  output.style.overflow = 'auto';
-  body.append(output);
 
-  const generate = async (): Promise<void> => {
+  const backdrop = el('div', { className: 'mc-modal-backdrop' });
+  const modal = el('div', { className: 'mc-modal' });
+  const errorEl = el('div', { className: 'mc-error-text' });
+  errorEl.hidden = true;
+  const cancel = el('button', { className: 'mc-btn', text: 'Cancel' });
+  const submit = el('button', { className: 'mc-btn primary', text: 'Export' });
+  const close = (): void => clear(modalRoot);
+
+  cancel.addEventListener('click', close);
+  submit.addEventListener('click', async () => {
+    submit.disabled = true;
     try {
-      const result = (await request('exportToLanguage', {
-        language: select.value,
-        stages: state.stages.map((s) => ({ id: s.id, text: s.text, enabled: s.enabled }))
-      })) as { code: string };
-      output.textContent = result.code;
-    } catch (err) {
-      output.textContent = (err as Error).message;
-    }
-  };
-  select.addEventListener('change', () => void generate());
-
-  openModal({
-    title: 'Export pipeline to language',
-    body,
-    primaryLabel: 'Copy',
-    onPrimary: async () => {
-      try {
-        const result = (await request('exportToLanguage', {
-          language: select.value,
-          stages: state.stages.map((s) => ({ id: s.id, text: s.text, enabled: s.enabled }))
-        })) as { code: string };
-        await navigator.clipboard.writeText(result.code);
-        closeModal();
-        setStatusMessage('Code copied to clipboard.');
-      } catch (err) {
-        showFieldError((err as Error).message);
+      const result = await request('exportData', payload({ format: select.value })) as { cancelled?: boolean; exported?: number };
+      if (!result.cancelled) {
+        state.warning = `Exported ${result.exported ?? 0} documents.`;
+        close();
+        render();
       }
-    },
-    onOpen: () => void generate()
+    } catch (error) {
+      errorEl.textContent = (error as Error).message;
+      errorEl.hidden = false;
+    } finally {
+      submit.disabled = false;
+    }
   });
+  backdrop.addEventListener('click', (event) => { if (event.target === backdrop) close(); });
+  modal.append(
+    el('h3', { text: 'Export aggregation results' }),
+    el('div', { className: 'mc-field' }, el('label', { text: 'Format' }), select),
+    el('p', { text: 'All documents produced by the current pipeline will be exported.' }),
+    errorEl,
+    el('div', { className: 'mc-modal-actions' }, cancel, submit)
+  );
+  backdrop.append(modal);
+  modalRoot.append(backdrop);
+  select.focus();
 }
 
 async function copyShell(): Promise<void> {
-  try {
-    await request('copyShellSnippet', {
-      stages: state.stages.map((s) => ({ id: s.id, text: s.text, enabled: s.enabled }))
-    });
-    setStatusMessage('mongosh snippet copied to clipboard.');
-  } catch (err) {
-    setStatusMessage((err as Error).message, true);
-  }
+  try { await request('copyShellSnippet', payload()); state.warning = 'mongosh pipeline copied.'; render(); }
+  catch (error) { state.error = (error as Error).message; render(); }
 }
 
-// ───────────────────────────── modal infrastructure ─────────────────────────────
-
-interface ModalOptions {
-  title: string;
-  body: HTMLElement;
-  primaryLabel: string;
-  onPrimary: (getValue: () => string) => void | Promise<void>;
-  hideSecondary?: boolean;
-  onOpen?: () => void;
-}
-
-let currentGetValue: () => string = () => '';
-let errorEl: HTMLElement | undefined;
-
-function openModal(options: ModalOptions): void {
-  closeModal();
-  const backdrop = el('div', { className: 'mc-modal-backdrop' });
-  const modal = el('div', { className: 'mc-modal' });
-  modal.append(el('h3', { text: options.title }));
-  modal.append(options.body);
-
-  errorEl = el('div', { className: 'mc-error-text' });
-  errorEl.style.marginTop = '8px';
-  errorEl.style.display = 'none';
-  modal.append(errorEl);
-
-  const actions = el('div', { className: 'mc-modal-actions' });
-  if (!options.hideSecondary) {
-    const cancel = el('button', { className: 'mc-btn', text: 'Cancel' });
-    cancel.addEventListener('click', closeModal);
-    actions.append(cancel);
-  }
-  const primary = el('button', { className: 'mc-btn primary', text: options.primaryLabel });
-  primary.addEventListener('click', () => void options.onPrimary(currentGetValue));
-  actions.append(primary);
-  modal.append(actions);
-
-  backdrop.append(modal);
-  backdrop.addEventListener('click', (e) => {
-    if (e.target === backdrop) {
-      closeModal();
-    }
-  });
-  modalRoot.append(backdrop);
-  options.onOpen?.();
-}
-
-function closeModal(): void {
-  clear(modalRoot);
-  errorEl = undefined;
-  currentGetValue = () => '';
-}
-
-function showFieldError(message: string): void {
-  if (errorEl) {
-    errorEl.textContent = message;
-    errorEl.style.display = 'block';
-  }
-}
-
-function textField(label: string, value: string): HTMLElement {
-  const wrap = el('div', { className: 'mc-field' });
-  wrap.append(el('label', { text: label }));
-  const input = el('input', { className: 'mc-input' }) as HTMLInputElement;
-  input.value = value;
-  wrap.append(input);
-  currentGetValue = () => input.value;
-  return wrap;
-}
-
-function setStatusMessage(message: string, isError = false): void {
-  clear(statusTextEl);
-  statusTextEl.append(el('span', { className: isError ? 'error' : '', text: message }));
-}
+$('btn-run').addEventListener('click', () => void run());
+$('btn-cancel').addEventListener('click', () => void request('cancel'));
+$('btn-count').addEventListener('click', () => void count());
+$('btn-explain').addEventListener('click', () => void explain());
+$('btn-save').addEventListener('click', () => void namedAction('savePipeline'));
+$('btn-view').addEventListener('click', () => void namedAction('createView'));
+$('btn-result-list').addEventListener('click', () => setResultView('list'));
+$('btn-result-table').addEventListener('click', () => setResultView('table'));
+$('btn-result-json').addEventListener('click', () => setResultView('json'));
+$('btn-export').addEventListener('click', showExportModal);
+$('btn-shell').addEventListener('click', () => void copyShell());
+render();

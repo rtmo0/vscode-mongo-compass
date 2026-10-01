@@ -46,8 +46,10 @@ let state: UiState = getState<UiState>({
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
 const titleEl = $('title');
+const refreshButton = $('btn-refresh') as HTMLButtonElement;
 const contentEl = $('content');
 const statusTextEl = $('status-text');
+const statusEl = statusTextEl.parentElement as HTMLElement;
 const toolbarActions = $('toolbar-actions');
 const modalRoot = $('modal-root');
 
@@ -130,6 +132,8 @@ async function refresh(): Promise<void> {
 
 function render(): void {
   titleEl.textContent = state.title;
+  refreshButton.hidden = state.kind === 'performanceMetrics';
+  statusEl.hidden = state.kind === 'performanceMetrics';
   renderStatus();
   renderToolbar();
   clear(contentEl);
@@ -725,18 +729,117 @@ function renderStats(): HTMLElement {
     wrap.append(summary);
   } else {
     const dbStats = (data.dbStats ?? {}) as Record<string, unknown>;
-    wrap.append(el('div', { className: 'mc-section-title', text: `Database: ${String(data.database)}` }));
-    const summary = el('dl', { className: 'mc-kv' });
-    summary.append(
-      el('dt', { text: 'Collections' }), el('dd', { text: formatNumber(Number(dbStats.collections ?? 0)) }),
-      el('dt', { text: 'Views' }), el('dd', { text: formatNumber(Number(dbStats.views ?? 0)) }),
-      el('dt', { text: 'Objects' }), el('dd', { text: formatNumber(Number(dbStats.objects ?? 0)) }),
-      el('dt', { text: 'Data size' }), el('dd', { text: formatBytes(Number(dbStats.dataSize ?? 0)) }),
-      el('dt', { text: 'Storage size' }), el('dd', { text: formatBytes(Number(dbStats.storageSize ?? 0)) }),
-      el('dt', { text: 'Indexes' }), el('dd', { text: formatNumber(Number(dbStats.indexes ?? 0)) }),
-      el('dt', { text: 'Index size' }), el('dd', { text: formatBytes(Number(dbStats.indexSize ?? 0)) })
+    const info = (data.info ?? {}) as Record<string, unknown>;
+    const databaseName = String(data.database);
+    const sizeOnDisk = Number(info.sizeOnDisk ?? dbStats.storageSize ?? 0);
+    const totalSizeOnDisk = Number(data.totalSizeOnDisk ?? 0);
+    const sizeShare = Number(data.sizeShare ?? 0);
+    const databaseCount = Number(data.databaseCount ?? 0);
+    const sizeRank = Number(data.sizeRank ?? 0);
+
+    wrap.className = 'mc-stats-view';
+    const header = el('div', { className: 'mc-stats-header' });
+    header.append(
+      el('div', {},
+        el('div', { className: 'mc-stats-eyebrow', text: 'Database statistics' }),
+        el('h2', { text: databaseName }),
+        el('div', { className: 'mc-muted', text: `#${sizeRank || '—'} by size among ${databaseCount} databases` })
+      ),
+      el('div', { className: 'mc-stats-share-value', text: `${sizeShare.toFixed(1)}%` })
     );
-    wrap.append(summary);
+    wrap.append(header);
+
+    const share = el('section', { className: 'mc-stats-share' });
+    const shareFill = el('span', { className: 'mc-stats-share-fill' });
+    shareFill.style.width = `${Math.min(100, sizeShare).toFixed(1)}%`;
+    share.append(
+      el('div', { className: 'mc-stats-share-label' },
+        el('strong', { text: 'Share of total database storage' }),
+        el('span', { text: `${formatBytes(sizeOnDisk)} of ${formatBytes(totalSizeOnDisk)}` })
+      ),
+      el('div', { className: 'mc-stats-share-track' }, shareFill)
+    );
+    wrap.append(share);
+
+    const cards = el('div', { className: 'mc-stats-cards' });
+    const addCard = (label: string, value: string, detail?: string): void => {
+      cards.append(el('div', { className: 'mc-stats-card' },
+        el('span', { text: label }),
+        el('strong', { text: value }),
+        detail ? el('small', { text: detail }) : ''
+      ));
+    };
+    addCard('Collections', formatNumber(Number(dbStats.collections ?? 0)), `${formatNumber(Number(dbStats.views ?? 0))} views`);
+    addCard('Documents', formatNumber(Number(dbStats.objects ?? 0)));
+    addCard('Data size', formatBytes(Number(dbStats.dataSize ?? 0)));
+    addCard('Storage size', formatBytes(Number(dbStats.storageSize ?? sizeOnDisk)));
+    addCard('Indexes', formatNumber(Number(dbStats.indexes ?? 0)));
+    addCard('Index size', formatBytes(Number(dbStats.indexSize ?? 0)));
+    wrap.append(cards);
+
+    const collectionStats = (data.collectionStats ?? []) as Array<{
+      name: string;
+      type: string;
+      count: number;
+      dataSize: number;
+      storageSize: number;
+      avgObjectSize: number;
+      indexes: number;
+      indexSize: number;
+    }>;
+    const totals = collectionStats.reduce((sum, collection) => ({
+      count: sum.count + collection.count,
+      dataSize: sum.dataSize + collection.dataSize,
+      storageSize: sum.storageSize + collection.storageSize,
+      indexes: sum.indexes + collection.indexes,
+      indexSize: sum.indexSize + collection.indexSize
+    }), { count: 0, dataSize: 0, storageSize: 0, indexes: 0, indexSize: 0 });
+
+    const section = el('section', { className: 'mc-stats-collections' });
+    section.append(el('div', { className: 'mc-section-title', text: `Collections (${collectionStats.length})` }));
+    const table = el('table', { className: 'mc-table mc-stats-table' });
+    table.append(el('thead', {}, el('tr', {},
+      el('th', { text: 'Collection' }),
+      el('th', { text: 'Documents' }),
+      el('th', { text: 'Data' }),
+      el('th', { text: 'Storage' }),
+      el('th', { text: 'Avg document' }),
+      el('th', { text: 'Indexes' }),
+      el('th', { text: 'Index size' }),
+      el('th', { text: 'Total / share' })
+    )));
+    const body = el('tbody');
+    for (const collection of collectionStats) {
+      const total = collection.storageSize + collection.indexSize;
+      const percent = totals.storageSize + totals.indexSize > 0 ? total / (totals.storageSize + totals.indexSize) * 100 : 0;
+      const fill = el('span', { className: 'mc-load-fill' });
+      fill.style.width = `${percent.toFixed(1)}%`;
+      body.append(el('tr', {},
+        el('td', {}, el('strong', { text: collection.name }), collection.type === 'view' ? el('small', { text: ' view' }) : ''),
+        el('td', { text: formatNumber(collection.count) }),
+        el('td', { text: formatBytes(collection.dataSize) }),
+        el('td', { text: formatBytes(collection.storageSize) }),
+        el('td', { text: formatBytes(collection.avgObjectSize) }),
+        el('td', { text: formatNumber(collection.indexes) }),
+        el('td', { text: formatBytes(collection.indexSize) }),
+        el('td', {}, el('div', { className: 'mc-load-cell' }, el('div', { className: 'mc-load-track' }, fill), el('strong', { text: `${percent.toFixed(1)}%` })))
+      ));
+    }
+    body.append(el('tr', { className: 'mc-stats-total-row' },
+      el('td', { text: 'Total' }),
+      el('td', { text: formatNumber(totals.count) }),
+      el('td', { text: formatBytes(totals.dataSize) }),
+      el('td', { text: formatBytes(totals.storageSize) }),
+      el('td', { text: '—' }),
+      el('td', { text: formatNumber(totals.indexes) }),
+      el('td', { text: formatBytes(totals.indexSize) }),
+      el('td', { text: formatBytes(totals.storageSize + totals.indexSize) })
+    ));
+    table.append(body);
+    const scroll = el('div', { className: 'mc-stats-table-scroll' });
+    scroll.append(table);
+    section.append(scroll);
+    wrap.append(section);
   }
 
   wrap.append(el('div', { className: 'mc-section-title', text: 'Raw stats' }));
@@ -758,6 +861,15 @@ function formatBytes(bytes: number | undefined): string {
   return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
 }
 
+function formatDurationSeconds(seconds: number): string {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor(seconds % 86400 / 3600);
+  const minutes = Math.floor(seconds % 3600 / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m ${Math.floor(seconds % 60)}s`;
+}
+
 // ───────────────────────────── server status ─────────────────────────────
 
 function renderServerStatus(): HTMLElement {
@@ -772,50 +884,55 @@ function renderServerStatus(): HTMLElement {
     return empty('No server status');
   }
 
-  const wrap = el('div');
+  const wrap = el('div', { className: 'mc-server-status' });
   const status = data.serverStatus;
 
   if (status.error) {
     wrap.append(el('div', { className: 'mc-insight', text: `serverStatus unavailable: ${status.error}` }));
   }
 
-  const summary = el('dl', { className: 'mc-kv' });
-  summary.append(
-    el('dt', { text: 'Connection' }), el('dd', { text: data.connectionName ?? '—' }),
-    el('dt', { text: 'Version' }), el('dd', { text: String(data.buildInfo.version ?? data.topology?.serverVersion ?? '—') }),
-    el('dt', { text: 'Topology' }), el('dd', { text: data.topology?.topologyType ?? '—' }),
-    el('dt', { text: 'Atlas' }), el('dd', { text: data.topology?.isAtlas ? 'yes' : 'no' }),
-    el('dt', { text: 'Host' }), el('dd', { text: String(status.host ?? '—') }),
-    el('dt', { text: 'Uptime' }), el('dd', { text: status.uptime ? `${formatNumber(Number(status.uptime))} s` : '—' })
+  const overview = el('section', { className: 'mc-server-overview' });
+  overview.append(
+    el('div', {},
+      el('div', { className: 'mc-stats-eyebrow', text: 'MongoDB server' }),
+      el('h2', { text: data.connectionName ?? String(status.host ?? 'MongoDB') }),
+      el('div', { className: 'mc-muted', text: String(status.host ?? 'Host unavailable') })
+    ),
+    el('span', { className: 'mc-server-health', text: status.error ? 'Unavailable' : '● Online' })
   );
+  wrap.append(overview);
+
+  const cards = el('div', { className: 'mc-server-cards' });
+  const addCard = (label: string, value: string, detail?: string): void => {
+    cards.append(el('article', { className: 'mc-stats-card' },
+      el('span', { text: label }),
+      el('strong', { text: value }),
+      detail ? el('small', { text: detail }) : ''
+    ));
+  };
+  addCard('Version', String(data.buildInfo.version ?? data.topology?.serverVersion ?? '—'), data.topology?.topologyType ?? 'Unknown topology');
+  addCard('Deployment', data.topology?.isAtlas ? 'MongoDB Atlas' : 'Self-managed', data.topology?.isAtlas ? 'Cloud deployment' : 'Local or private server');
+  addCard('Uptime', status.uptime ? formatDurationSeconds(Number(status.uptime)) : '—', status.uptime ? `${formatNumber(Number(status.uptime))} seconds` : undefined);
 
   const connections = (status.connections ?? {}) as Record<string, unknown>;
-  if (connections.current !== undefined) {
-    summary.append(
-      el('dt', { text: 'Connections' }),
-      el('dd', { text: `${formatNumber(Number(connections.current))} current / ${formatNumber(Number(connections.available ?? 0))} available` })
-    );
-  }
-
-  const opcounters = (status.opcounters ?? {}) as Record<string, unknown>;
-  if (opcounters.insert !== undefined) {
-    summary.append(
-      el('dt', { text: 'Opcounters' }),
-      el('dd', {
-        text: `ins ${formatNumber(Number(opcounters.insert ?? 0))} · qry ${formatNumber(Number(opcounters.query ?? 0))} · upd ${formatNumber(Number(opcounters.update ?? 0))} · del ${formatNumber(Number(opcounters.delete ?? 0))} · cmd ${formatNumber(Number(opcounters.command ?? 0))}`
-      })
-    );
-  }
+  addCard('Connections', formatNumber(Number(connections.current ?? 0)), `${formatNumber(Number(connections.available ?? 0))} available`);
 
   const mem = (status.mem ?? {}) as Record<string, unknown>;
-  if (mem.resident !== undefined) {
-    summary.append(
-      el('dt', { text: 'Memory' }),
-      el('dd', { text: `resident ${formatNumber(Number(mem.resident))} MB · virtual ${formatNumber(Number(mem.virtual ?? 0))} MB` })
-    );
-  }
+  addCard('Resident memory', `${formatNumber(Number(mem.resident ?? 0))} MB`, `${formatNumber(Number(mem.virtual ?? 0))} MB virtual`);
 
-  wrap.append(summary);
+  const opcounters = (status.opcounters ?? {}) as Record<string, unknown>;
+  const totalOperations = ['insert', 'query', 'update', 'delete', 'command'].reduce((sum, key) => sum + Number(opcounters[key] ?? 0), 0);
+  addCard('Operations', formatNumber(totalOperations), 'Since server start');
+  wrap.append(cards);
+
+  const operations = el('section', { className: 'mc-server-operations' });
+  operations.append(el('div', { className: 'mc-section-title', text: 'Operation counters' }));
+  const operationGrid = el('div', { className: 'mc-operation-grid' });
+  for (const [label, key] of [['Inserts', 'insert'], ['Queries', 'query'], ['Updates', 'update'], ['Deletes', 'delete'], ['Commands', 'command'], ['Get more', 'getmore']]) {
+    operationGrid.append(el('div', {}, el('span', { text: label }), el('strong', { text: formatNumber(Number(opcounters[key] ?? 0)) })));
+  }
+  operations.append(operationGrid);
+  wrap.append(operations);
 
   wrap.append(el('div', { className: 'mc-section-title', text: 'Raw serverStatus' }));
   const details = el('details');
@@ -899,9 +1016,17 @@ function renderPerformanceMetrics(): HTMLElement {
   if (!sample) return empty('Waiting for performance samples…');
   const wrap = el('div', { className: 'mc-performance' });
   const heading = el('div', { className: 'mc-performance-heading' });
+  const connection = el('div', { className: 'mc-performance-connection' });
+  connection.append(
+    el('strong', { text: sample.connectionName ?? 'MongoDB' }),
+    el('span', { className: 'mc-muted', text: 'Live server metrics' })
+  );
   heading.append(
-    el('div', {}, el('strong', { text: sample.connectionName ?? 'MongoDB' }), el('span', { className: 'mc-muted', text: ' · live server metrics' })),
-    el('span', { className: `mc-live-indicator${performancePaused ? ' paused' : ''}`, text: performancePaused ? 'Paused' : 'Live' })
+    connection,
+    el('div', { className: 'mc-performance-state' },
+      el('span', { className: 'mc-performance-time', text: new Date(sample.sampledAt).toLocaleTimeString() }),
+      el('span', { className: `mc-live-indicator${performancePaused ? ' paused' : ''}`, text: performancePaused ? 'Paused' : 'Live' })
+    )
   );
   wrap.append(heading);
 
@@ -909,6 +1034,7 @@ function renderPerformanceMetrics(): HTMLElement {
     wrap.append(el('div', { className: 'mc-insight', text: 'Collecting the first two samples…' }));
   }
 
+  const dashboard = el('div', { className: 'mc-performance-dashboard' });
   const charts = el('div', { className: 'mc-performance-grid' });
   charts.append(
     metricChart('Operations', 'ops/s', 'operations', ['insert', 'query', 'update', 'delete', 'command']),
@@ -917,11 +1043,11 @@ function renderPerformanceMetrics(): HTMLElement {
     metricChart('Connections', 'connections', 'connections', ['current', 'active']),
     metricChart('Memory', 'MB', 'memory', ['resident', 'virtual'])
   );
-  wrap.append(charts);
 
   const details = el('div', { className: 'mc-performance-tables' });
   details.append(renderHottestCollections(sample), renderSlowOperations(sample));
-  wrap.append(details);
+  dashboard.append(charts, details);
+  wrap.append(dashboard);
   return wrap;
 }
 
@@ -1044,11 +1170,30 @@ function renderHottestCollections(sample: PerformanceSampleData): HTMLElement {
     })
     .sort((a, b) => b.micros - a.micros)
     .slice(0, 8);
+  const totalMicros = rows.reduce((sum, row) => sum + row.micros, 0);
   const table = el('table', { className: 'mc-table mc-performance-table' });
-  table.append(el('thead', {}, el('tr', {}, el('th', { text: 'Namespace' }), el('th', { text: 'Time' }))));
+  table.append(el('thead', {}, el('tr', {},
+    el('th', { text: 'Namespace' }),
+    el('th', { text: 'Load' }),
+    el('th', { text: 'Time' })
+  )));
   const body = el('tbody');
-  for (const row of rows) body.append(el('tr', {}, el('td', { text: row.namespace }), el('td', { text: formatDurationMicros(row.micros) })));
-  if (!rows.length) body.append(el('tr', {}, el('td', { text: 'No collection activity yet', colSpan: 2 })));
+  for (const row of rows) {
+    const percent = totalMicros > 0 ? row.micros / totalMicros * 100 : 0;
+    const loadFill = el('span', { className: 'mc-load-fill' });
+    loadFill.style.width = `${percent.toFixed(1)}%`;
+    body.append(el('tr', {},
+      el('td', { text: row.namespace, title: row.namespace }),
+      el('td', {},
+        el('div', { className: 'mc-load-cell' },
+          el('div', { className: 'mc-load-track' }, loadFill),
+          el('strong', { text: `${percent.toFixed(1)}%` })
+        )
+      ),
+      el('td', { text: formatDurationMicros(row.micros) })
+    ));
+  }
+  if (!rows.length) body.append(el('tr', {}, el('td', { text: 'No collection activity yet', colSpan: 3 })));
   table.append(body); card.append(table); return card;
 }
 
@@ -1256,7 +1401,7 @@ function savedTable(
     const openBtn = el('button', { className: 'mc-btn icon-only', text: '↗', title: 'Open' });
     openBtn.addEventListener('click', () => void runSavedCommand(openCommand, item.id));
     const deleteBtn = el('button', { className: 'mc-btn icon-only', text: '🗑', title: 'Delete' });
-    deleteBtn.addEventListener('click', () => void runSavedCommand(deleteCommand, item.id, true));
+    deleteBtn.addEventListener('click', () => void runSavedCommand(deleteCommand, item.id));
     actions.append(openBtn, deleteBtn);
     row.append(actions);
     tbody.append(row);
@@ -1265,12 +1410,16 @@ function savedTable(
   return table;
 }
 
-async function runSavedCommand(command: string, id: string, isDelete = false): Promise<void> {
-  if (isDelete && !window.confirm('Delete this item?')) {
-    return;
-  }
+async function runSavedCommand(command: string, id: string): Promise<void> {
   try {
-    const result = (await request(command, { id })) as { queries?: SavedQuery[]; pipelines?: SavedPipeline[] };
+    const result = (await request(command, { id })) as {
+      cancelled?: boolean;
+      queries?: SavedQuery[];
+      pipelines?: SavedPipeline[];
+    };
+    if (result.cancelled) {
+      return;
+    }
     if (result.queries || result.pipelines) {
       state.data = result;
       render();

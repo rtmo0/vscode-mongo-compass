@@ -14,6 +14,8 @@
       <div class="mc-collection-tabs" role="tablist" aria-label="Collection views">
         <button class="mc-collection-tab active" id="tab-documents" role="tab" aria-selected="true">Documents</button>
         <button class="mc-collection-tab" id="tab-indexes" role="tab" aria-selected="false">Indexes</button>
+        <button class="mc-collection-tab" id="tab-schema" role="tab" aria-selected="false">Schema</button>
+        <button class="mc-collection-tab" id="tab-validation" role="tab" aria-selected="false">Validation</button>
       </div>
 
       <div class="mc-toolbar" id="documents-toolbar">
@@ -32,10 +34,10 @@
         </div>
         <span class="spacer"></span>
         <button class="mc-btn" id="btn-view-list" title="List view">☰</button>
-        <button class="mc-btn" id="btn-view-table" title="Table view">▦</button>
+        <button class="mc-btn mc-table-view-toggle" id="btn-view-table" title="Table view">▦</button>
         <button class="mc-btn" id="btn-view-json" title="JSON view">{ }</button>
         <button class="mc-btn" id="btn-save" title="Save query to My Queries">★</button>
-        <button class="mc-btn" id="btn-export" title="Export query to language">⤓</button>
+        <button class="mc-btn" id="btn-export" title="Export documents using the current filter">Export</button>
         <button class="mc-btn" id="btn-agg" title="Open aggregation builder">Aggregation</button>
       </div>
 

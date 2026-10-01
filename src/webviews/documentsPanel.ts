@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
+import * as path from 'path';
 import { EJSON, ObjectId, type Document } from 'bson';
 import { BaseWebviewPanel } from './baseWebview';
 import { DataService, Namespace } from '../core/dataService';
@@ -7,6 +9,7 @@ import type { QueryHistoryStore } from '../core/queryHistory';
 import type { MyQueriesStore } from '../core/myQueries';
 import { parseShellBSON, parseSort, parseNumberOption } from '../core/bsonParser';
 import { getConfig } from '../core/config';
+import { ImportExportService, type ExportFormat } from '../core/importExport';
 import { logger } from '../core/logger';
 import type { QueryState } from '../core/types';
 
@@ -272,6 +275,34 @@ export class DocumentsPanel extends BaseWebviewPanel {
       const payload = msg.payload as { mode: 'list' | 'table' | 'json' };
       this.state.viewMode = payload.mode;
       respond({ ok: true });
+    });
+
+    this.registerHandler('exportData', async (msg, respond) => {
+      const { format } = msg.payload as { format: ExportFormat };
+      const target = await vscode.window.showSaveDialog({
+        title: `Export filtered documents from ${this.state.namespace.toString()}`,
+        defaultUri: vscode.Uri.file(path.join(os.homedir(), `${this.state.namespace.collection}.${format}`)),
+        filters: format === 'csv' ? { CSV: ['csv'] } : { JSON: [format] }
+      });
+      if (!target) {
+        respond({ cancelled: true });
+        return;
+      }
+
+      const service = await this.service();
+      const io = new ImportExportService(service);
+      const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Exporting ${this.state.namespace.toString()}…`, cancellable: true },
+        (progress, token) => io.exportCollection(
+          this.state.namespace,
+          target.fsPath,
+          { format, filter: this.state.query.filter },
+          (value) => progress.report({ message: `${value.processed} documents…` }),
+          token
+        )
+      );
+      respond(result);
+      void vscode.window.showInformationMessage(`Exported ${result.exported} documents to ${result.file}.`);
     });
 
     this.registerHandler('exportToLanguage', async (msg, respond) => {

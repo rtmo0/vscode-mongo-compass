@@ -128,11 +128,19 @@ export function highlightJson(value: unknown, indent = 2): string {
   }
   const escaped = escapeHtml(json);
   return escaped.replace(
-    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?|\b(?:ObjectId|ISODate|NumberLong|NumberInt|NumberDecimal|UUID|Timestamp|DBRef|Binary)\b)/g,
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\$?[A-Za-z_][A-Za-z0-9_]*(?=\s*:)|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?|\b(?:ObjectId|ISODate|NumberLong|NumberInt|NumberDecimal|UUID|Timestamp|DBRef|Binary)\b)/g,
     (match) => {
       let cls = 'tok-number';
       if (/^"/.test(match)) {
-        cls = /:$/.test(match) ? 'tok-key' : 'tok-string';
+        if (/^"\$/.test(match) && /:$/.test(match)) {
+          cls = 'tok-operator';
+        } else {
+          cls = /:$/.test(match) ? 'tok-key' : 'tok-string';
+        }
+      } else if (/^\$/.test(match)) {
+        cls = 'tok-operator';
+      } else if (/^[A-Za-z_]/.test(match) && /^(?:true|false|null)$/.test(match) === false) {
+        cls = 'tok-key';
       } else if (/true|false/.test(match)) {
         cls = 'tok-boolean';
       } else if (/null/.test(match)) {
@@ -143,6 +151,183 @@ export function highlightJson(value: unknown, indent = 2): string {
       return `<span class="${cls}">${match}</span>`;
     }
   );
+}
+
+/** Render an expandable, compact JSON tree shared by document and aggregation views. */
+export function createJsonTree(value: unknown, expanded = true): HTMLElement {
+  return renderJsonNode(value, 0, expanded, false);
+}
+
+/** Render document fields as the collapsible tree used by list views. */
+export function createFieldTree(value: Record<string, unknown>): HTMLElement {
+  const tree = el('div', { className: 'mc-tree' });
+  for (const [key, fieldValue] of Object.entries(value)) {
+    tree.append(renderFieldTreeRow(key, fieldValue, 0));
+  }
+  return tree;
+}
+
+/** Format a value for a compact table cell while preserving EJSON scalar types. */
+export function formatJsonCell(value: unknown, compact = false): string {
+  if (value === undefined) return '—';
+  if (value === null || typeof value !== 'object') return formatJsonTreeValue(value);
+  const scalar = formatEjsonDate(value);
+  if (scalar !== undefined) return scalar;
+  return compact ? jsonValueSummary(value as Record<string, unknown> | unknown[]) : JSON.stringify(value);
+}
+
+function renderFieldTreeRow(key: string, value: unknown, depth: number): HTMLElement {
+  const branch = isJsonContainer(value);
+  const row = el('div', { className: 'mc-tree-row' });
+  row.style.setProperty('--tree-depth', String(depth));
+  const toggle = el('button', {
+    className: `mc-tree-toggle${branch ? '' : ' leaf'}`,
+    text: branch ? '▸' : '',
+    title: branch ? 'Expand field' : ''
+  });
+  row.append(
+    toggle,
+    el('span', { className: 'mc-tree-key', text: key }),
+    el('span', { className: 'mc-tree-separator', text: ':' }),
+    el('span', {
+      className: `mc-tree-value ${jsonValueClass(value)}`,
+      text: branch ? jsonValueSummary(value) : formatJsonTreeValue(value)
+    })
+  );
+
+  const field = el('div', { className: 'mc-tree-field' }, row);
+  if (!branch) return field;
+  const children = el('div', { className: 'mc-tree-children' });
+  children.hidden = true;
+  for (const [childKey, childValue] of Object.entries(value)) {
+    children.append(renderFieldTreeRow(childKey, childValue, depth + 1));
+  }
+  toggle.addEventListener('click', () => {
+    children.hidden = !children.hidden;
+    toggle.textContent = children.hidden ? '▸' : '▾';
+    toggle.title = children.hidden ? 'Expand field' : 'Collapse field';
+  });
+  field.append(children);
+  return field;
+}
+
+function renderJsonNode(value: unknown, depth: number, expanded: boolean, trailingComma: boolean): HTMLElement {
+  if (!isJsonContainer(value)) {
+    return el('span', {
+      className: `mc-json-value ${jsonValueClass(value)}`,
+      text: formatJsonTreeValue(value)
+    });
+  }
+
+  const isArray = Array.isArray(value);
+  const entries = Object.entries(value);
+  const open = isArray ? '[' : '{';
+  const close = isArray ? ']' : '}';
+  const wrapper = el('div', { className: 'mc-json-node' });
+  const line = el('div', { className: 'mc-json-line' });
+  line.style.setProperty('--json-depth', String(depth));
+  const toggle = el('button', {
+    className: 'mc-json-toggle',
+    text: expanded ? '▾' : '▸',
+    title: expanded ? 'Collapse value' : 'Expand value'
+  });
+  const preview = el('span', {
+    className: 'mc-json-preview',
+    text: expanded ? '' : `${jsonValueSummary(value)} ${close}${trailingComma ? ',' : ''}`
+  });
+  line.append(toggle, el('span', { className: 'mc-json-punctuation', text: open }), preview);
+
+  const children = el('div', { className: 'mc-json-children' });
+  children.hidden = !expanded;
+  entries.forEach(([key, childValue], index) => {
+    children.append(renderJsonProperty(key, childValue, depth + 1, isArray, index < entries.length - 1));
+  });
+
+  const closing = el('div', {
+    className: 'mc-json-closing',
+    text: `${close}${trailingComma ? ',' : ''}`
+  });
+  closing.style.setProperty('--json-depth', String(depth));
+  closing.hidden = !expanded;
+
+  toggle.addEventListener('click', () => {
+    expanded = children.hidden;
+    children.hidden = !expanded;
+    closing.hidden = !expanded;
+    preview.textContent = expanded ? '' : `${jsonValueSummary(value)} ${close}${trailingComma ? ',' : ''}`;
+    toggle.textContent = expanded ? '▾' : '▸';
+    toggle.title = expanded ? 'Collapse value' : 'Expand value';
+  });
+
+  wrapper.append(line, children, closing);
+  return wrapper;
+}
+
+function renderJsonProperty(key: string, value: unknown, depth: number, parentIsArray: boolean, trailingComma: boolean): HTMLElement {
+  const property = el('div', { className: 'mc-json-property' });
+  property.style.setProperty('--json-depth', String(depth));
+  property.append(
+    el('span', { className: 'mc-json-key', text: parentIsArray ? key : JSON.stringify(key) }),
+    el('span', { className: 'mc-json-colon', text: ': ' })
+  );
+
+  if (!isJsonContainer(value)) {
+    property.append(renderJsonNode(value, depth, false, false));
+    if (trailingComma) property.append(el('span', { className: 'mc-json-punctuation', text: ',' }));
+    return property;
+  }
+
+  const nested = renderJsonNode(value, depth, false, trailingComma);
+  nested.classList.add('mc-json-nested-node');
+  property.append(nested.querySelector('.mc-json-line') as HTMLElement);
+  const wrapper = el('div', { className: 'mc-json-property-node' }, property);
+  const children = nested.querySelector('.mc-json-children') as HTMLElement;
+  const closing = nested.querySelector('.mc-json-closing') as HTMLElement;
+  wrapper.append(children, closing);
+  return wrapper;
+}
+
+function isJsonContainer(value: unknown): value is Record<string, unknown> | unknown[] {
+  return value !== null && typeof value === 'object' && formatEjsonDate(value) === undefined;
+}
+
+function jsonValueSummary(value: Record<string, unknown> | unknown[]): string {
+  return Array.isArray(value) ? `Array (${value.length})` : `Object (${Object.keys(value).length})`;
+}
+
+function formatJsonTreeValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'object') return formatEjsonDate(value) ?? String(value);
+  return String(value);
+}
+
+function jsonValueClass(value: unknown): string {
+  if (value === null) return 'tok-null';
+  if (typeof value === 'string') return 'tok-string';
+  if (typeof value === 'number' || typeof value === 'bigint') return 'tok-number';
+  if (typeof value === 'boolean') return 'tok-boolean';
+  if (typeof value === 'object') return 'tok-bson';
+  return '';
+}
+
+function formatEjsonDate(value: object): string | undefined {
+  if (Array.isArray(value)) return undefined;
+  const dateValue = (value as Record<string, unknown>).$date;
+  let raw: string | number | undefined;
+
+  if (typeof dateValue === 'string' || typeof dateValue === 'number') {
+    raw = dateValue;
+  } else if (dateValue !== null && typeof dateValue === 'object') {
+    const numberLong = (dateValue as Record<string, unknown>).$numberLong;
+    if (typeof numberLong === 'string') raw = numberLong;
+  }
+
+  if (raw === undefined) return undefined;
+  const date = new Date(typeof raw === 'number' ? raw : /^-?\d+$/.test(raw) ? Number(raw) : raw);
+  return Number.isNaN(date.getTime())
+    ? `ISODate(${JSON.stringify(String(raw))})`
+    : `ISODate(${JSON.stringify(date.toISOString())})`;
 }
 
 /** Create an editable textarea with a synchronized BSON/EJSON highlight layer. */

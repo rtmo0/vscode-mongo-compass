@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 import * as path from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import type { Document } from 'bson';
 
 import { ConnectionStore } from './core/connectionStore';
@@ -7,7 +10,6 @@ import { ConnectionManager } from './core/connectionManager';
 import { QueryHistoryStore } from './core/queryHistory';
 import { MyQueriesStore } from './core/myQueries';
 import { DataService, Namespace } from './core/dataService';
-import { ImportExportService } from './core/importExport';
 import { parseShellBSON, parsePipeline } from './core/bsonParser';
 import { getConfig } from './core/config';
 import { logger, getOutputChannel } from './core/logger';
@@ -41,6 +43,7 @@ interface Services {
 }
 
 let services: Services | undefined;
+const execFileAsync = promisify(execFile);
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   logger.info('Activating MongoDB Compass extension');
@@ -157,6 +160,22 @@ async function confirmDangerous(message: string): Promise<boolean> {
   }
   const answer = await vscode.window.showWarningMessage(message, { modal: true }, 'Yes');
   return answer === 'Yes';
+}
+
+async function ensureMongoToolAvailable(tool: 'mongodump' | 'mongorestore'): Promise<boolean> {
+  try {
+    await execFileAsync(process.platform === 'win32' ? 'where' : 'which', [tool]);
+    return true;
+  } catch {
+    const action = await vscode.window.showErrorMessage(
+      `${tool} is not installed or is not available on PATH. Install MongoDB Database Tools and restart VS Code.`,
+      'Installation instructions'
+    );
+    if (action) {
+      await vscode.env.openExternal(vscode.Uri.parse('https://www.mongodb.com/docs/database-tools/installation/installation/'));
+    }
+    return false;
+  }
 }
 
 function nodeNamespace(node: unknown): Namespace | undefined {
@@ -1063,19 +1082,68 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
   const { connectionManager } = s;
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('mongoCompass.restoreDatabase', async (arg?: DatabasesNode) => {
+    vscode.commands.registerCommand('mongoCompass.dumpDatabase', async (arg?: DatabaseNode) => {
+      if (!await ensureMongoToolAvailable('mongodump')) {
+        return;
+      }
+      const connection = arg?.connection ?? await requireConnection(connectionManager);
+      const databaseName = arg?.database.name ?? await pickDatabase(connection);
+      if (!databaseName) {
+        return;
+      }
+      const safeDatabaseName = databaseName.replace(/[^a-zA-Z0-9._-]+/g, '_');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const target = await vscode.window.showSaveDialog({
+        title: `Export ${databaseName} as mongodump`,
+        defaultUri: vscode.Uri.file(path.join(os.homedir(), `${safeDatabaseName}-${timestamp}.archive.gz`)),
+        filters: { 'Compressed mongodump archive': ['archive.gz', 'gz'] }
+      });
+      if (!target) {
+        return;
+      }
+
+      const terminal = vscode.window.createTerminal({
+        name: `mongodump: ${databaseName}`,
+        location: vscode.TerminalLocation.Editor,
+        env: {
+          MONGO_COMPASS_URI: connectionStringForDatabase(connection.options.connectionString, databaseName),
+          MONGO_COMPASS_DUMP: target.fsPath
+        }
+      });
+      terminal.show();
+      terminal.sendText(
+        'mongodump --uri="$MONGO_COMPASS_URI" --archive="$MONGO_COMPASS_DUMP" --gzip',
+        true
+      );
+    }),
+
+    vscode.commands.registerCommand('mongoCompass.restoreDatabase', async (arg?: DatabaseNode | DatabasesNode) => {
+      if (!await ensureMongoToolAvailable('mongorestore')) {
+        return;
+      }
       const connection = arg?.connection ?? connectionManager.activeConnection;
       if (!connection) {
         void vscode.window.showErrorMessage('Connect to a server first.');
         return;
       }
 
-      const databaseName = await vscode.window.showInputBox({
-        title: 'Restore MongoDB Database',
+      const selectedDatabaseName = arg instanceof DatabaseNode ? arg.database.name : undefined;
+      const databaseName = selectedDatabaseName ?? await vscode.window.showInputBox({
+        title: 'Import mongodump',
         prompt: 'Target database name',
         validateInput: (value) => value.trim() ? null : 'Database name is required'
       });
       if (!databaseName) {
+        return;
+      }
+
+      const sourceDatabaseName = await vscode.window.showInputBox({
+        title: 'Import mongodump',
+        prompt: 'Database name stored in the dump',
+        value: databaseName,
+        validateInput: (value) => value.trim() ? null : 'Source database name is required'
+      });
+      if (!sourceDatabaseName) {
         return;
       }
 
@@ -1107,7 +1175,7 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
       const isGzip = dumpPath.toLowerCase().endsWith('.gz');
       const restoreArgs = [
         '--uri="$MONGO_COMPASS_URI"',
-        '--nsFrom="*.*"',
+        '--nsFrom="$MONGO_COMPASS_SOURCE_DATABASE.*"',
         '--nsTo="$MONGO_COMPASS_DATABASE.*"',
         restoreMode.drop ? '--drop' : '',
         isGzip ? '--gzip' : '',
@@ -1120,6 +1188,7 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
         env: {
           MONGO_COMPASS_URI: connection.options.connectionString,
           MONGO_COMPASS_DATABASE: databaseName.trim(),
+          MONGO_COMPASS_SOURCE_DATABASE: sourceDatabaseName.trim(),
           MONGO_COMPASS_DUMP: dumpPath
         }
       });
@@ -1128,135 +1197,96 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
     }),
 
     vscode.commands.registerCommand('mongoCompass.exportCollection', async (arg?: CollectionNode) => {
-      const { ns, connId } = await resolveNamespace(connectionManager, arg);
-      if (!ns || !connId) {
+      if (!await ensureMongoToolAvailable('mongodump')) {
         return;
       }
-      const format = await vscode.window.showQuickPick(
-        [
-          { label: 'json', description: 'Pretty-printed JSON array' },
-          { label: 'jsonl', description: 'JSON Lines (one document per line)' },
-          { label: 'csv', description: 'CSV (flattened nested fields)' }
-        ],
-        { placeHolder: 'Export format' }
-      );
-      if (!format) {
+      if (!(arg instanceof CollectionNode)) {
         return;
       }
-      const filterText = await vscode.window.showInputBox({ prompt: 'Filter (optional)', value: '{}' });
-      if (filterText === undefined) {
-        return;
-      }
+
+      const ns = arg.namespace;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const target = await vscode.window.showSaveDialog({
-        defaultUri: vscode.Uri.file(path.join(process.cwd(), `${ns.collection}.${format.label}`)),
-        filters: format.label === 'csv' ? { CSV: ['csv'] } : { JSON: ['json', 'jsonl'] }
+        title: `Export ${ns.toString()} as mongodump`,
+        defaultUri: vscode.Uri.file(path.join(os.homedir(), `${ns.database}-${ns.collection}-${timestamp}.archive.gz`)),
+        filters: { 'Compressed mongodump archive': ['gz'] }
       });
       if (!target) {
         return;
       }
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Exporting ${ns.toString()}…`, cancellable: true },
-        async (progress, token) => {
-          try {
-            const connection = await connectionManager.requireClient(connId);
-            const service = new DataService(connection.client, connId);
-            const io = new ImportExportService(service);
-            const filter = parseShellBSON(filterText);
-            const result = await io.exportCollection(
-              ns,
-              target.fsPath,
-              { format: format.label as 'json' | 'jsonl' | 'csv', filter },
-              (p) => progress.report({ message: `${p.processed} documents…` }),
-              token
-            );
-            void vscode.window.showInformationMessage(`Exported ${result.exported} documents to ${result.file}.`);
-          } catch (err) {
-            void vscode.window.showErrorMessage(`Export failed: ${(err as Error).message}`);
-          }
+
+      const terminal = vscode.window.createTerminal({
+        name: `mongodump: ${ns.toString()}`,
+        location: vscode.TerminalLocation.Editor,
+        env: {
+          MONGO_COMPASS_URI: connectionStringForDatabase(arg.connection.options.connectionString, ns.database),
+          MONGO_COMPASS_COLLECTION: ns.collection,
+          MONGO_COMPASS_DUMP: target.fsPath
         }
+      });
+      terminal.show();
+      terminal.sendText(
+        'mongodump --uri="$MONGO_COMPASS_URI" --collection="$MONGO_COMPASS_COLLECTION" --archive="$MONGO_COMPASS_DUMP" --gzip',
+        true
       );
     }),
 
-    vscode.commands.registerCommand('mongoCompass.importCollection', async (arg?: CollectionNode | DatabaseNode | CollectionsNode) => {
-      let ns: Namespace | undefined;
-      let connId: string | undefined;
-
-      if (arg instanceof CollectionNode) {
-        ns = arg.namespace;
-        connId = arg.connection.options.id;
-      } else {
-        const connection = await requireConnection(connectionManager);
-        connId = connection.options.id;
-        const database =
-          arg instanceof DatabaseNode
-            ? arg.database.name
-            : arg instanceof CollectionsNode
-              ? arg.databaseName
-              : await pickDatabase(connection);
-        if (!database) {
-          return;
-        }
-        const collection = await vscode.window.showInputBox({
-          prompt: `Target collection in ${database}`,
-          validateInput: (v) => (v.trim() ? null : 'Required')
-        });
-        if (!collection) {
-          return;
-        }
-        ns = new Namespace(database, collection.trim());
+    vscode.commands.registerCommand('mongoCompass.importCollection', async (arg?: CollectionNode) => {
+      if (!await ensureMongoToolAvailable('mongorestore')) {
+        return;
       }
-
-      if (!ns || !connId) {
+      if (!(arg instanceof CollectionNode)) {
         return;
       }
 
       const source = await vscode.window.showOpenDialog({
+        title: `Import mongodump into ${arg.namespace.toString()}`,
+        canSelectFiles: true,
+        canSelectFolders: true,
         canSelectMany: false,
-        filters: { Data: ['json', 'jsonl', 'csv', 'ndjson'] }
+        filters: { 'MongoDB dump archives': ['archive', 'gz'], 'All files': ['*'] }
       });
-      if (!source || source.length === 0) {
+      if (!source?.[0]) {
         return;
       }
-      const file = source[0].fsPath;
-      const ext = path.extname(file).toLowerCase().replace('.', '');
-      const format: 'json' | 'jsonl' | 'csv' =
-        ext === 'csv' ? 'csv' : ext === 'jsonl' || ext === 'ndjson' ? 'jsonl' : 'json';
 
-      const mode = await vscode.window.showQuickPick(
+      const restoreMode = await vscode.window.showQuickPick(
         [
-          { label: 'insert', description: 'Insert new documents' },
-          { label: 'upsert', description: 'Upsert on _id' }
+          { label: 'Merge', description: 'Keep existing documents', drop: false },
+          { label: 'Replace', description: 'Drop the collection before restoring it', drop: true }
         ],
-        { placeHolder: 'Import mode' }
+        { title: 'Import mode' }
       );
-      if (!mode) {
+      if (!restoreMode) {
         return;
       }
 
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Importing into ${ns.toString()}…`, cancellable: true },
-        async (progress, token) => {
-          try {
-            const connection = await connectionManager.requireClient(connId as string);
-            const service = new DataService(connection.client, connId as string);
-            const io = new ImportExportService(service);
-            const result = await io.importFile(
-              ns as Namespace,
-              file,
-              { format, mode: mode.label as 'insert' | 'upsert', stopOnError: false },
-              (p) => progress.report({ message: `${p.processed}/${p.total ?? '?'}…` }),
-              token
-            );
-            s.explorer.refresh();
-            const message = result.errors.length
-              ? `Imported ${result.imported} documents (${result.errors.length} errors).`
-              : `Imported ${result.imported} documents.`;
-            void vscode.window.showInformationMessage(message);
-          } catch (err) {
-            void vscode.window.showErrorMessage(`Import failed: ${(err as Error).message}`);
-          }
+      const dumpPath = source[0].fsPath;
+      const sourceStat = await vscode.workspace.fs.stat(source[0]);
+      const isDirectory = (sourceStat.type & vscode.FileType.Directory) !== 0;
+      const isGzip = dumpPath.toLowerCase().endsWith('.gz');
+      const restoreArgs = [
+        '--uri="$MONGO_COMPASS_URI"',
+        '--nsInclude="*.$MONGO_COMPASS_COLLECTION"',
+        '--nsFrom="*.$MONGO_COMPASS_COLLECTION"',
+        '--nsTo="$MONGO_COMPASS_DATABASE.$MONGO_COMPASS_COLLECTION"',
+        restoreMode.drop ? '--drop' : '',
+        isGzip ? '--gzip' : '',
+        isDirectory ? '"$MONGO_COMPASS_DUMP"' : '--archive="$MONGO_COMPASS_DUMP"'
+      ].filter(Boolean).join(' ');
+
+      const terminal = vscode.window.createTerminal({
+        name: `mongorestore: ${arg.namespace.toString()}`,
+        location: vscode.TerminalLocation.Editor,
+        env: {
+          MONGO_COMPASS_URI: arg.connection.options.connectionString,
+          MONGO_COMPASS_DATABASE: arg.namespace.database,
+          MONGO_COMPASS_COLLECTION: arg.namespace.collection,
+          MONGO_COMPASS_DUMP: dumpPath
         }
-      );
+      });
+      terminal.show();
+      terminal.sendText(`mongorestore ${restoreArgs}`, true);
     }),
 
     vscode.commands.registerCommand('mongoCompass.showServerStatus', async () => {
@@ -1272,8 +1302,10 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
       );
     }),
 
-    vscode.commands.registerCommand('mongoCompass.showPerformanceMetrics', async () => {
-      const connection = await requireConnection(connectionManager);
+    vscode.commands.registerCommand('mongoCompass.showPerformanceMetrics', async (arg?: ConnectionNode) => {
+      const connection = arg instanceof ConnectionNode
+        ? await connectionManager.requireClient(arg.connection.options.id)
+        : await requireConnection(connectionManager);
       DataPanel.open(
         context.extensionUri,
         connectionManager,
@@ -1281,7 +1313,7 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
         s.myQueries,
         'performanceMetrics',
         { connectionId: connection.options.id },
-        `Performance Metrics — ${connection.options.name}`
+        'Performance Metrics'
       );
     }),
 

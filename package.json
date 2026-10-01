@@ -2,7 +2,7 @@
   "name": "mongo-compass",
   "displayName": "MongoDB Explorer & Compass Tools",
   "description": "Explore MongoDB, edit documents, build aggregation pipelines, manage indexes, analyze schemas and inspect performance without leaving VS Code.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "samarin-aa-aka-rtm00",
   "icon": "resources/mongodb.png",
   "license": "SEE LICENSE IN LICENSE",
@@ -263,14 +263,20 @@
         "icon": "$(export)"
       },
       {
+        "command": "mongoCompass.dumpDatabase",
+        "title": "Export Database…",
+        "category": "MongoDB",
+        "icon": "$(cloud-upload)"
+      },
+      {
         "command": "mongoCompass.importCollection",
-        "title": "Import Data…",
+        "title": "Import Collection…",
         "category": "MongoDB",
         "icon": "$(import)"
       },
       {
         "command": "mongoCompass.restoreDatabase",
-        "title": "Restore Database from Dump…",
+        "title": "Import Database…",
         "category": "MongoDB",
         "icon": "$(cloud-download)"
       },
@@ -436,6 +442,11 @@
           "group": "1_connection@3"
         },
         {
+          "command": "mongoCompass.showPerformanceMetrics",
+          "when": "view == mongoCompass.explorer && viewItem == connection.connected",
+          "group": "3_monitoring@1"
+        },
+        {
           "command": "mongoCompass.removeConnection",
           "when": "view == mongoCompass.explorer && viewItem =~ /^connection\\./",
           "group": "9_danger@1"
@@ -511,14 +522,19 @@
           "group": "4_data@1"
         },
         {
+          "command": "mongoCompass.dumpDatabase",
+          "when": "view == mongoCompass.explorer && viewItem == database",
+          "group": "4_data@1"
+        },
+        {
           "command": "mongoCompass.importCollection",
-          "when": "view == mongoCompass.explorer && (viewItem == collection || viewItem == collection.view || viewItem == collection.timeseries || viewItem == database || viewItem == collections)",
+          "when": "view == mongoCompass.explorer && (viewItem == collection || viewItem == collection.view || viewItem == collection.timeseries)",
           "group": "4_data@2"
         },
         {
           "command": "mongoCompass.restoreDatabase",
-          "when": "view == mongoCompass.explorer && viewItem == databases",
-          "group": "4_data@1"
+          "when": "view == mongoCompass.explorer && (viewItem == database || viewItem == databases)",
+          "group": "4_data@2"
         },
         {
           "command": "mongoCompass.duplicateCollection",

@@ -6,6 +6,7 @@ import type { ConnectionManager } from '../core/connectionManager';
 import type { QueryHistoryStore } from '../core/queryHistory';
 import type { MyQueriesStore } from '../core/myQueries';
 import { parseShellBSON, parsePipeline } from '../core/bsonParser';
+import { hostSummary } from '../core/connectionString';
 import { getConfig } from '../core/config';
 import { logger } from '../core/logger';
 import type { ViewKind } from '../core/types';
@@ -200,10 +201,39 @@ export class DataPanel extends BaseWebviewPanel {
       return { scope: 'collection', namespace: ns.toString(), collStats, count, indexes };
     }
     if (this.context.database) {
-      const dbStats = await service.databaseStats(this.context.database);
-      const databases = await service.listDatabases();
+      const [dbStats, databases, collections] = await Promise.all([
+        service.databaseStats(this.context.database),
+        service.listDatabases(),
+        service.listCollections(this.context.database)
+      ]);
+      const collectionStats = await Promise.all(collections.map(async (collection) => {
+        const stats = await service.collectionStats(this.context.database as string, collection.name).catch(() => null);
+        return {
+          name: collection.name,
+          type: collection.type,
+          count: Number(stats?.count ?? 0),
+          dataSize: Number(stats?.size ?? 0),
+          storageSize: Number(stats?.storageSize ?? 0),
+          avgObjectSize: Number(stats?.avgObjSize ?? 0),
+          indexes: Number(stats?.nindexes ?? 0),
+          indexSize: Number(stats?.totalIndexSize ?? 0)
+        };
+      }));
       const info = databases.find((d) => d.name === this.context.database);
-      return { scope: 'database', database: this.context.database, dbStats, info };
+      const totalSizeOnDisk = databases.reduce((sum, database) => sum + (database.sizeOnDisk ?? 0), 0);
+      const sortedBySize = [...databases].sort((a, b) => (b.sizeOnDisk ?? 0) - (a.sizeOnDisk ?? 0));
+      const sizeRank = sortedBySize.findIndex((database) => database.name === this.context.database) + 1;
+      return {
+        scope: 'database',
+        database: this.context.database,
+        dbStats,
+        info,
+        totalSizeOnDisk,
+        databaseCount: databases.length,
+        sizeRank,
+        collectionStats: collectionStats.sort((a, b) => b.storageSize + b.indexSize - (a.storageSize + a.indexSize)),
+        sizeShare: totalSizeOnDisk > 0 ? (info?.sizeOnDisk ?? 0) / totalSizeOnDisk * 100 : 0
+      };
     }
     throw new Error('No database context for stats');
   }
@@ -240,9 +270,15 @@ export class DataPanel extends BaseWebviewPanel {
       service.currentOp(false).catch(() => ({ inprog: [] })),
       service.runCommand('admin', { top: 1 }).catch(() => ({ totals: {} }))
     ]);
+    const configuredName = connection?.options.name.trim();
+    const connectionName = configuredName && !/^mongodb(?:\+srv)?:\/\//i.test(configuredName)
+      ? configuredName
+      : connection
+        ? hostSummary(connection.options.connectionString)
+        : 'MongoDB';
     return {
       sampledAt: Date.now(),
-      connectionName: connection?.options.name,
+      connectionName,
       serverStatus,
       currentOp: (currentOp.inprog ?? []) as Document[],
       top: (top.totals ?? {}) as Document
@@ -354,12 +390,38 @@ export class DataPanel extends BaseWebviewPanel {
 
     this.registerHandler('deleteSavedQuery', async (msg, respond) => {
       const payload = msg.payload as { id: string };
+      const query = this.myQueries.queries.find((item) => item.id === payload.id);
+      if (!query) {
+        throw new Error('Saved query not found');
+      }
+      const answer = await vscode.window.showWarningMessage(
+        `Delete saved query "${query.name}"?`,
+        { modal: true },
+        'Delete'
+      );
+      if (answer !== 'Delete') {
+        respond({ cancelled: true });
+        return;
+      }
       await this.myQueries.deleteQuery(payload.id);
       respond({ queries: this.myQueries.queries, pipelines: this.myQueries.pipelines });
     });
 
     this.registerHandler('deleteSavedPipeline', async (msg, respond) => {
       const payload = msg.payload as { id: string };
+      const pipeline = this.myQueries.pipelines.find((item) => item.id === payload.id);
+      if (!pipeline) {
+        throw new Error('Saved pipeline not found');
+      }
+      const answer = await vscode.window.showWarningMessage(
+        `Delete saved pipeline "${pipeline.name}"?`,
+        { modal: true },
+        'Delete'
+      );
+      if (answer !== 'Delete') {
+        respond({ cancelled: true });
+        return;
+      }
       await this.myQueries.deletePipeline(payload.id);
       respond({ queries: this.myQueries.queries, pipelines: this.myQueries.pipelines });
     });

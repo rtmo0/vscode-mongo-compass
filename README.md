@@ -63,8 +63,10 @@ Built on the official [`mongodb`](https://www.npmjs.com/package/mongodb) Node dr
 - Performance insights (COLLSCAN, SORT, EOFSORT, covered queries, examine/return ratio)
 
 ### Import / Export (Compass `compass-import-export`)
-- Export collection to **JSON / JSON Lines / CSV** (with filter, flattening)
-- Import **JSON / JSONL / CSV** with insert/upsert, type inference, progress, cancellation
+- Export and import complete databases as compressed **mongodump archives**
+- Export and import individual collections through **mongodump / mongorestore**
+- Export Documents results matching the current filter to **JSON / JSON Lines / CSV**
+- Export the current aggregation pipeline results to **JSON / JSON Lines / CSV**
 
 ### Server tools (Compass `compass-serverstats`)
 - Server status (connections, opcounters, memory, uptime)
@@ -82,7 +84,7 @@ Built on the official [`mongodb`](https://www.npmjs.com/package/mongodb) Node dr
 
 - VS Code 1.85 or newer.
 - A reachable MongoDB deployment. Standalone servers, replica sets, sharded clusters and MongoDB Atlas are supported by the official Node.js driver.
-- `mongosh` and `mongorestore` must be installed separately and available on `PATH` for the corresponding commands.
+- `mongosh`, `mongodump`, and `mongorestore` must be installed separately and available on `PATH` for the corresponding commands.
 
 ```bash
 npm install

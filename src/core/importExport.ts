@@ -14,6 +14,8 @@ export interface ExportOptions {
   format: ExportFormat;
   /** Restrict exported documents with a filter. */
   filter?: Document;
+  /** Export the results of an aggregation pipeline instead of a find query. */
+  pipeline?: Document[];
   /** Flatten nested documents into `a.b.c` columns (CSV only). */
   flatten?: boolean;
   /** Explicit field list; empty = all fields. */
@@ -62,11 +64,13 @@ export class ImportExportService {
     const batchSize = options.batchSize ?? config.exportBatchSize;
     const collection = this.dataService.collection(ns);
 
-    const total = await collection
-      .countDocuments(options.filter ?? {})
-      .catch(() => null);
+    const total = options.pipeline
+      ? null
+      : await collection.countDocuments(options.filter ?? {}).catch(() => null);
 
-    const cursor = collection.find(options.filter ?? {}).batchSize(batchSize);
+    const cursor = options.pipeline
+      ? collection.aggregate(options.pipeline).batchSize(batchSize)
+      : collection.find(options.filter ?? {}).batchSize(batchSize);
 
     await fs.promises.mkdir(path.dirname(targetFile), { recursive: true });
 

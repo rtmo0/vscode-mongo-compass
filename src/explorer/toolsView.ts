@@ -57,18 +57,6 @@ const TOOLS: ToolItem[] = [
     command: 'mongoCompass.runCommand'
   },
   {
-    label: 'Import Data',
-    description: 'Import JSON / JSONL / CSV into a collection',
-    icon: 'import',
-    command: 'mongoCompass.importCollection'
-  },
-  {
-    label: 'Export Collection',
-    description: 'Export a collection to JSON / JSONL / CSV',
-    icon: 'export',
-    command: 'mongoCompass.exportCollection'
-  },
-  {
     label: 'Output Channel',
     description: 'Show the MongoDB Compass log',
     icon: 'output',

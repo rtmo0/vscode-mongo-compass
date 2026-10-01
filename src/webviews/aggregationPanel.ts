@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
+import * as path from 'path';
 import { EJSON, type Document } from 'bson';
 import { BaseWebviewPanel } from './baseWebview';
 import { DataService, Namespace } from '../core/dataService';
@@ -7,14 +9,21 @@ import type { QueryHistoryStore } from '../core/queryHistory';
 import type { MyQueriesStore } from '../core/myQueries';
 import { parseStage, parsePipeline } from '../core/bsonParser';
 import { getConfig } from '../core/config';
+import { ImportExportService, type ExportFormat } from '../core/importExport';
 import { logger } from '../core/logger';
 import type { AggregationStage } from '../core/types';
+
+interface PipelinePayload {
+  pipelineText: string;
+}
 
 interface StagePayload {
   id: string;
   text: string;
   enabled: boolean;
 }
+
+const AGGREGATION_PREVIEW_LIMIT = 10;
 
 /**
  * Aggregation Pipeline Builder — the equivalent of Compass'
@@ -85,18 +94,14 @@ export class AggregationPanel extends BaseWebviewPanel {
       database: namespace.database,
       collection: namespace.collection,
       connectionId,
-      stages: this.stages,
-      autoPreview: getConfig().autoPreviewPipeline,
-      stageOperators: STAGE_OPERATORS
+      pipelineText: this.pipelineText()
     });
   }
 
   protected override onPanelReused(): void {
     this.post('init', {
       namespace: this.namespace.toString(),
-      stages: this.stages,
-      autoPreview: getConfig().autoPreviewPipeline,
-      stageOperators: STAGE_OPERATORS
+      pipelineText: this.pipelineText()
     });
   }
 
@@ -130,49 +135,55 @@ export class AggregationPanel extends BaseWebviewPanel {
     }
   }
 
-  /** Build the effective pipeline from enabled stages. */
+  private pipelineText(): string {
+    const pipeline = this.stages.flatMap((stage) => {
+      if (!stage.enabled) {
+        return [];
+      }
+      try {
+        return [parseStage(stage.text)];
+      } catch {
+        return [];
+      }
+    }).filter((stage): stage is Document => Boolean(stage));
+    return EJSON.stringify(pipeline, undefined, 2, { relaxed: false });
+  }
+
   private buildPipeline(stages: StagePayload[]): Document[] {
     const pipeline: Document[] = [];
     for (const stage of stages) {
-      if (!stage.enabled) {
-        continue;
-      }
+      if (!stage.enabled) continue;
       const parsed = parseStage(stage.text);
-      if (parsed) {
-        pipeline.push(parsed);
-      }
+      if (parsed) pipeline.push(parsed);
     }
     return pipeline;
+  }
+
+  private pipelineStages(payload: PipelinePayload): StagePayload[] {
+    return parsePipeline(payload.pipelineText).map((stage, index) => ({
+      id: `stage-${index}`,
+      text: EJSON.stringify(stage, undefined, 2, { relaxed: false }),
+      enabled: true
+    }));
   }
 
   private registerHandlers(): void {
     this.registerHandler('ready', (_msg, respond) => {
       respond({
         namespace: this.namespace.toString(),
-        stages: this.stages,
-        autoPreview: getConfig().autoPreviewPipeline,
-        stageOperators: STAGE_OPERATORS
+        pipelineText: this.pipelineText()
       });
     });
 
-    this.registerHandler('syncStages', (msg, respond) => {
-      const payload = msg.payload as { stages: StagePayload[] };
-      this.stages = payload.stages.map((s) => ({
-        ...this.findStage(s.id) ?? this.newStage(s.text),
-        text: s.text,
-        enabled: s.enabled
-      }));
+    this.registerHandler('syncPipeline', (msg, respond) => {
+      const payload = msg.payload as PipelinePayload;
+      this.stages = this.pipelineStages(payload).map((stage) => this.newStage(stage.text));
       respond({ ok: true });
     });
 
-    this.registerHandler('preview', async (msg, respond) => {
-      const payload = msg.payload as { stages: StagePayload[]; upToStageId?: string };
-      await this.runPipeline(payload.stages, payload.upToStageId, false, respond);
-    });
-
     this.registerHandler('runAll', async (msg, respond) => {
-      const payload = msg.payload as { stages: StagePayload[] };
-      await this.runPipeline(payload.stages, undefined, true, respond);
+      const payload = msg.payload as PipelinePayload;
+      await this.runPipeline(this.pipelineStages(payload), undefined, true, respond);
     });
 
     this.registerHandler('cancel', () => {
@@ -180,8 +191,8 @@ export class AggregationPanel extends BaseWebviewPanel {
     });
 
     this.registerHandler('count', async (msg, respond) => {
-      const payload = msg.payload as { stages: StagePayload[] };
-      const pipeline = this.buildPipeline(payload.stages);
+      const payload = msg.payload as PipelinePayload;
+      const pipeline = this.buildPipeline(this.pipelineStages(payload));
       this.assertReadOnlyPipeline(pipeline, 'Count');
       const service = await this.service();
       const count = await service.aggregateCount(this.namespace, pipeline);
@@ -189,8 +200,8 @@ export class AggregationPanel extends BaseWebviewPanel {
     });
 
     this.registerHandler('explain', async (msg, respond) => {
-      const payload = msg.payload as { stages: StagePayload[] };
-      const pipeline = this.buildPipeline(payload.stages);
+      const payload = msg.payload as PipelinePayload;
+      const pipeline = this.buildPipeline(this.pipelineStages(payload));
       this.assertReadOnlyPipeline(pipeline, 'Explain');
       const service = await this.service();
       const explain = await service.explainAggregate(this.namespace, pipeline);
@@ -209,10 +220,19 @@ export class AggregationPanel extends BaseWebviewPanel {
     });
 
     this.registerHandler('savePipeline', async (msg, respond) => {
-      const payload = msg.payload as { name: string; stages: StagePayload[] };
-      const pipeline = this.buildPipeline(payload.stages);
+      const payload = msg.payload as PipelinePayload;
+      const name = await vscode.window.showInputBox({
+        title: 'Save Aggregation Pipeline',
+        prompt: 'Pipeline name',
+        validateInput: (value) => value.trim() ? null : 'Name is required'
+      });
+      if (!name) {
+        respond({ cancelled: true });
+        return;
+      }
+      const pipeline = this.buildPipeline(this.pipelineStages(payload));
       const saved = await this.myQueries.savePipeline({
-        name: payload.name,
+        name: name.trim(),
         connectionId: this.connectionId,
         database: this.namespace.database,
         collection: this.namespace.collection,
@@ -223,23 +243,62 @@ export class AggregationPanel extends BaseWebviewPanel {
     });
 
     this.registerHandler('createView', async (msg, respond) => {
-      const payload = msg.payload as { viewName: string; stages: StagePayload[] };
-      const pipeline = this.buildPipeline(payload.stages);
+      const payload = msg.payload as PipelinePayload;
+      const viewName = await vscode.window.showInputBox({
+        title: 'Create View from Pipeline',
+        prompt: 'View name',
+        validateInput: (value) => value.trim() ? null : 'Name is required'
+      });
+      if (!viewName) {
+        respond({ cancelled: true });
+        return;
+      }
+      const pipeline = this.buildPipeline(this.pipelineStages(payload));
       const service = await this.service();
       await service.createView(
         this.namespace.database,
-        payload.viewName,
+        viewName.trim(),
         this.namespace.collection,
         pipeline
       );
       respond({ ok: true });
-      void vscode.window.showInformationMessage(`View "${payload.viewName}" created.`);
+      void vscode.window.showInformationMessage(`View "${viewName.trim()}" created.`);
       this.post('refreshExplorer');
     });
 
+    this.registerHandler('exportData', async (msg, respond) => {
+      const payload = msg.payload as PipelinePayload & { format: ExportFormat };
+      const pipeline = this.buildPipeline(this.pipelineStages(payload));
+      this.assertReadOnlyPipeline(pipeline, 'Export');
+      const target = await vscode.window.showSaveDialog({
+        title: `Export aggregation results from ${this.namespace.toString()}`,
+        defaultUri: vscode.Uri.file(path.join(os.homedir(), `${this.namespace.collection}-aggregation.${payload.format}`)),
+        filters: payload.format === 'csv' ? { CSV: ['csv'] } : { JSON: [payload.format] }
+      });
+      if (!target) {
+        respond({ cancelled: true });
+        return;
+      }
+
+      const service = await this.service();
+      const io = new ImportExportService(service);
+      const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Exporting aggregation results…`, cancellable: true },
+        (progress, token) => io.exportCollection(
+          this.namespace,
+          target.fsPath,
+          { format: payload.format, pipeline },
+          (value) => progress.report({ message: `${value.processed} documents…` }),
+          token
+        )
+      );
+      respond(result);
+      void vscode.window.showInformationMessage(`Exported ${result.exported} documents to ${result.file}.`);
+    });
+
     this.registerHandler('exportToLanguage', async (msg, respond) => {
-      const payload = msg.payload as { language: string; stages: StagePayload[] };
-      const pipeline = this.buildPipeline(payload.stages);
+      const payload = msg.payload as PipelinePayload & { language: string };
+      const pipeline = this.buildPipeline(this.pipelineStages(payload));
       const { exportToLanguage } = await import('../core/exportToLanguage');
       const connection = this.connectionManager.get(this.connectionId);
       const code = exportToLanguage(payload.language as never, {
@@ -252,8 +311,8 @@ export class AggregationPanel extends BaseWebviewPanel {
     });
 
     this.registerHandler('copyShellSnippet', async (msg, respond) => {
-      const payload = msg.payload as { stages: StagePayload[] };
-      const pipeline = this.buildPipeline(payload.stages);
+      const payload = msg.payload as PipelinePayload;
+      const pipeline = this.buildPipeline(this.pipelineStages(payload));
       const { exportToLanguage } = await import('../core/exportToLanguage');
       const code = exportToLanguage('shell', {
         database: this.namespace.database,
@@ -285,10 +344,6 @@ export class AggregationPanel extends BaseWebviewPanel {
         description: help?.description ?? ''
       });
     });
-  }
-
-  private findStage(id: string): AggregationStage | undefined {
-    return this.stages.find((s) => s.id === id);
   }
 
   private assertReadOnlyPipeline(pipeline: Document[], action: string): void {
@@ -327,7 +382,6 @@ export class AggregationPanel extends BaseWebviewPanel {
 
     try {
       const service = await this.service();
-      const config = getConfig();
 
       if (hasOutputStage) {
         if (executeOutputStages) {
@@ -366,7 +420,7 @@ export class AggregationPanel extends BaseWebviewPanel {
         return;
       }
 
-      const previewPipeline = [...pipeline, { $limit: config.defaultLimit }];
+      const previewPipeline = [...pipeline, { $limit: AGGREGATION_PREVIEW_LIMIT }];
       const documents = await service.aggregate(this.namespace, previewPipeline, {}, {
         signal: this.abortController.signal
       });

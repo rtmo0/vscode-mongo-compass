@@ -7,9 +7,9 @@ import {
   el,
   clear,
   escapeHtml,
-  highlightJson,
   createSyntaxEditor,
   createExplainView,
+  createJsonTree,
   formatNumber,
   debounce
 } from '../shared/client';
@@ -815,76 +815,10 @@ function renderJson(): HTMLElement {
       className: 'mc-json-document-number',
       text: `Document ${state.query.skip + index + 1}`
     }));
-    block.append(renderJsonValue(document, 0, true));
+    block.append(createJsonTree(document));
     container.append(block);
   });
   return container;
-}
-
-function renderJsonValue(value: unknown, depth: number, expanded = false): HTMLElement {
-  if (!isJsonExpandable(value)) {
-    return el('span', {
-      className: `mc-json-value ${valueClass(value)}`,
-      text: formatTreeValue(value)
-    });
-  }
-
-  const isArray = Array.isArray(value);
-  const entries = Object.entries(value);
-  const open = isArray ? '[' : '{';
-  const close = isArray ? ']' : '}';
-  const wrapper = el('div', { className: 'mc-json-node' });
-  const line = el('div', { className: 'mc-json-line' });
-  line.style.setProperty('--json-depth', String(depth));
-  const toggle = el('button', {
-    className: 'mc-json-toggle',
-    text: expanded ? '▾' : '▸',
-    title: expanded ? 'Collapse value' : 'Expand value'
-  });
-  const opener = el('span', { className: 'mc-json-punctuation', text: open });
-  const preview = el('span', {
-    className: 'mc-json-preview',
-    text: expanded ? '' : `${valueSummary(value)} ${close}`
-  });
-  line.append(toggle, opener, preview);
-
-  const children = el('div', { className: 'mc-json-children' });
-  children.hidden = !expanded;
-  entries.forEach(([key, childValue], index) => {
-    const childLine = el('div', { className: 'mc-json-property' });
-    childLine.style.setProperty('--json-depth', String(depth + 1));
-    const property = el('span', {
-      className: 'mc-json-key',
-      text: isArray ? key : `"${key}"`
-    });
-    childLine.append(property, el('span', { className: 'mc-json-colon', text: ': ' }));
-    const rendered = renderJsonValue(childValue, isJsonExpandable(childValue) ? 0 : depth + 1);
-    if (isJsonExpandable(childValue)) {
-      rendered.classList.add('mc-json-inline-node');
-    }
-    childLine.append(rendered);
-    if (index < entries.length - 1) {
-      childLine.append(el('span', { className: 'mc-json-punctuation', text: ',' }));
-    }
-    children.append(childLine);
-  });
-
-  const closing = el('div', { className: 'mc-json-closing' });
-  closing.style.setProperty('--json-depth', String(depth));
-  closing.textContent = close;
-  closing.hidden = !expanded;
-
-  toggle.addEventListener('click', () => {
-    const nextExpanded = children.hidden;
-    children.hidden = !nextExpanded;
-    closing.hidden = !nextExpanded;
-    preview.textContent = nextExpanded ? '' : `${valueSummary(value)} ${close}`;
-    toggle.textContent = nextExpanded ? '▾' : '▸';
-    toggle.title = nextExpanded ? 'Collapse value' : 'Expand value';
-  });
-
-  wrapper.append(line, children, closing);
-  return wrapper;
 }
 
 function renderPagination(): void {
@@ -940,10 +874,6 @@ function formatCell(value: unknown, compact = false): string {
 
 function isExpandable(value: unknown): value is Record<string, unknown> | unknown[] {
   return value !== null && typeof value === 'object' && !isEjsonScalar(value);
-}
-
-function isJsonExpandable(value: unknown): value is Record<string, unknown> | unknown[] {
-  return value !== null && typeof value === 'object';
 }
 
 function isEjsonScalar(value: object): boolean {
@@ -1284,59 +1214,31 @@ async function showSaveQueryModal(): Promise<void> {
 }
 
 async function showExportModal(): Promise<void> {
-  const languages = [
-    'shell',
-    'javascript',
-    'typescript',
-    'python',
-    'java',
-    'csharp',
-    'go',
-    'php',
-    'ruby',
-    'rust',
-    'compass'
-  ];
   const body = el('div');
   const select = el('select', { className: 'mc-select' }) as HTMLSelectElement;
-  for (const lang of languages) {
-    select.append(el('option', { value: lang, text: lang }));
+  for (const format of ['json', 'jsonl', 'csv']) {
+    select.append(el('option', { value: format, text: format.toUpperCase() }));
   }
-  body.append(el('div', { className: 'mc-field' }, el('label', { text: 'Language' }), select));
-  const output = el('pre', { className: 'mc-mono' });
-  output.style.marginTop = '12px';
-  output.style.maxHeight = '320px';
-  output.style.overflow = 'auto';
-  body.append(output);
-
-  const generate = async (): Promise<void> => {
-    try {
-      const result = (await request('exportToLanguage', { language: select.value })) as { code: string };
-      output.innerHTML = highlightJson(result.code);
-      output.textContent = result.code;
-    } catch (err) {
-      output.textContent = (err as Error).message;
-    }
-  };
-
-  select.addEventListener('change', () => void generate());
+  body.append(
+    el('div', { className: 'mc-field' }, el('label', { text: 'Format' }), select),
+    el('p', { text: 'All documents matching the current filter will be exported.' })
+  );
 
   openModal({
-    title: 'Export query to language',
+    title: 'Export filtered documents',
     body,
-    primaryLabel: 'Copy',
+    primaryLabel: 'Export',
     onPrimary: async () => {
-      await vscode.postMessage({ type: 'noop' });
       try {
-        const result = (await request('exportToLanguage', { language: select.value })) as { code: string };
-        await navigator.clipboard.writeText(result.code);
-        closeModal();
-        setStatusMessage('Code copied to clipboard.');
+        const result = await request('exportData', { format: select.value }) as { cancelled?: boolean; exported?: number };
+        if (!result.cancelled) {
+          closeModal();
+          setStatusMessage(`Exported ${result.exported ?? 0} documents.`);
+        }
       } catch (err) {
         showFieldError((err as Error).message);
       }
-    },
-    onOpen: () => void generate()
+    }
   });
 }
 
