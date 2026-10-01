@@ -72,7 +72,7 @@ export async function promptForConnection(
 
     const timeoutInput = await vscode.window.showInputBox({
       title: 'Server selection timeout (ms)',
-      value: String(serverSelectionTimeoutMS ?? 30000),
+      value: String(existing?.serverSelectionTimeoutMS ?? 30000),
       validateInput: (value) => (/^\d+$/.test(value.trim()) ? null : 'Enter a number')
     });
     if (timeoutInput === undefined) {
@@ -82,7 +82,7 @@ export async function promptForConnection(
 
     notes = await vscode.window.showInputBox({
       title: 'Notes (optional)',
-      value: notes ?? '',
+      value: existing?.notes ?? '',
       placeHolder: 'Any notes about this connection'
     });
     if (notes === undefined) {

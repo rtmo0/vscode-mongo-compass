@@ -27,15 +27,65 @@ export function analyzeDocuments(
   indexes: IndexInfo[] = []
 ): { fields: SchemaField[]; suggestions: string[] } {
   const total = documents.length;
-  const root = new FieldAccumulator('_id', '');
+  // A single accumulator tree keyed by full path. Top-level fields live at
+  // their own key; nested fields are discovered while walking each document.
+  const fields = new Map<string, FieldAccumulator>();
 
   for (const doc of documents) {
-    root.visit(doc, total);
+    collectFields(doc, '', fields);
   }
 
-  const fields = root.flatten(total);
-  const suggestions = buildSuggestions(fields, indexes);
-  return { fields, suggestions };
+  const flat = [...fields.values()]
+    .map((field) => field.toSchemaField(total))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  const suggestions = buildSuggestions(flat, indexes);
+  return { fields: flat, suggestions };
+}
+
+/** Walk a document and record every field path (top-level and nested) with
+ * its value, so `count`/`probability` are computed per path. */
+function collectFields(
+  value: unknown,
+  path: string,
+  fields: Map<string, FieldAccumulator>,
+  seen: Set<unknown> = new Set()
+): void {
+  if (value === null || value === undefined) {
+    return;
+  }
+  // Only descend into true documents. BSON scalars (ObjectId, Binary, Date,
+  // UUID, …) are objects too, but their internals must stay opaque.
+  if (bsonTypeName(value) !== 'Document') {
+    return;
+  }
+  if (seen.has(value)) {
+    return; // guard against cyclic documents
+  }
+  seen.add(value);
+
+  for (const [key, child] of Object.entries(value as Document)) {
+    const childPath = path ? `${path}.${key}` : key;
+    let field = fields.get(childPath);
+    if (!field) {
+      field = new FieldAccumulator(childPath, childPath);
+      fields.set(childPath, field);
+    }
+    field.addValue(child);
+    // Descend only into real subdocuments (not BSON scalars like UUID,
+    // ObjectId or Binary, whose internal representation must stay opaque),
+    // and into documents stored inside arrays, so paths like `meta.city`
+    // and `tags.title` are discovered.
+    const childType = bsonTypeName(child);
+    if (childType === 'Document') {
+      collectFields(child, childPath, fields, seen);
+    } else if (childType === 'Array') {
+      for (const item of child as unknown[]) {
+        if (bsonTypeName(item) === 'Document') {
+          collectFields(item, childPath, fields, seen);
+        }
+      }
+    }
+  }
 }
 
 class TypeAccumulator {
@@ -48,11 +98,11 @@ class TypeAccumulator {
   private min = Number.POSITIVE_INFINITY;
   private max = Number.NEGATIVE_INFINITY;
   private totalNumber = 0;
-  private readonly arrayItems = new Map<string, TypeAccumulator>();
-  private readonly objectFields = new Map<string, FieldAccumulator>();
 
   constructor(public readonly name: string) {}
 
+  /** Record one value's type statistics. No recursion — nested paths are
+   * handled by `collectFields` so each value is visited exactly once. */
   add(value: unknown): void {
     this.count += 1;
     const typeName = bsonTypeName(value);
@@ -64,35 +114,12 @@ class TypeAccumulator {
       this.totalLength += str.length;
     }
 
-    if (typeName === 'Int32' || typeName === 'Int64' || typeName === 'Double' || typeName === 'Decimal128') {
+    if (isNumericType(typeName)) {
       const num = toNumber(value);
       if (num !== null) {
         this.min = Math.min(this.min, num);
         this.max = Math.max(this.max, num);
         this.totalNumber += num;
-      }
-    }
-
-    if (typeName === 'Array' && Array.isArray(value)) {
-      for (const item of value) {
-        const itemName = bsonTypeName(item);
-        let acc = this.arrayItems.get(itemName);
-        if (!acc) {
-          acc = new TypeAccumulator(itemName);
-          this.arrayItems.set(itemName, acc);
-        }
-        acc.add(item);
-      }
-    }
-
-    if (typeName === 'Document' && isPlainObject(value)) {
-      for (const [key, child] of Object.entries(value as Document)) {
-        let field = this.objectFields.get(key);
-        if (!field) {
-          field = new FieldAccumulator(key, key);
-          this.objectFields.set(key, field);
-        }
-        field.addValue(child, this.count);
       }
     }
 
@@ -132,18 +159,6 @@ class TypeAccumulator {
       result.average = round(this.totalNumber / this.count);
     }
 
-    if (this.arrayItems.size > 0) {
-      result.arrayItems = [...this.arrayItems.values()]
-        .map((acc) => acc.toSchemaType(this.count))
-        .sort((a, b) => b.count - a.count);
-    }
-
-    if (this.objectFields.size > 0) {
-      result.fields = [...this.objectFields.values()]
-        .map((field) => field.toSchemaField(this.count))
-        .sort((a, b) => a.name.localeCompare(b.name));
-    }
-
     return result;
   }
 }
@@ -157,13 +172,8 @@ class FieldAccumulator {
     public readonly relativePath: string
   ) {}
 
-  visit(doc: Document, _total: number): void {
-    for (const [key, value] of Object.entries(doc)) {
-      this.addValue(value, 1, key);
-    }
-  }
-
-  addValue(value: unknown, _docCount: number, key?: string): void {
+  /** Record one field occurrence (one document). */
+  addValue(value: unknown): void {
     this.count += 1;
     const typeName = bsonTypeName(value);
     let acc = this.types.get(typeName);
@@ -172,36 +182,6 @@ class FieldAccumulator {
       this.types.set(typeName, acc);
     }
     acc.add(value);
-
-    // Recurse into embedded documents so nested paths appear in the tree.
-    if (typeName === 'Document' && isPlainObject(value)) {
-      for (const [childKey, childValue] of Object.entries(value as Document)) {
-        const child = this.child(key ?? childKey, childKey);
-        child.addValue(childValue, 1);
-      }
-    }
-    if (typeName === 'Array' && Array.isArray(value)) {
-      for (const item of value) {
-        if (bsonTypeName(item) === 'Document' && isPlainObject(item)) {
-          for (const [childKey, childValue] of Object.entries(item as Document)) {
-            const child = this.child(key ?? childKey, childKey);
-            child.addValue(childValue, 1);
-          }
-        }
-      }
-    }
-  }
-
-  private readonly children = new Map<string, FieldAccumulator>();
-
-  private child(parentPath: string, key: string): FieldAccumulator {
-    const path = parentPath ? `${parentPath}.${key}` : key;
-    let child = this.children.get(path);
-    if (!child) {
-      child = new FieldAccumulator(key, path);
-      this.children.set(path, child);
-    }
-    return child;
   }
 
   toSchemaField(total: number): SchemaField {
@@ -214,20 +194,6 @@ class FieldAccumulator {
         .map((acc) => acc.toSchemaType(this.count))
         .sort((a, b) => b.count - a.count)
     };
-  }
-
-  flatten(total: number): SchemaField[] {
-    const result: SchemaField[] = [];
-    for (const [typeName, acc] of this.types) {
-      // Root-level pseudo field per type is not useful; skip.
-      void typeName;
-      void acc;
-    }
-    for (const child of this.children.values()) {
-      result.push(child.toSchemaField(total));
-      result.push(...child.flatten(total));
-    }
-    return result;
   }
 }
 
@@ -303,11 +269,20 @@ export function bsonTypeName(value: unknown): string {
   if (value instanceof UUID) {
     return 'UUID';
   }
+  if (isBinaryLike(value)) {
+    // A de-serialised BSON Binary (e.g. `{ sub_type, buffer, position }`).
+    return 'Binary';
+  }
   if (value instanceof Timestamp) {
     return 'Timestamp';
   }
   if (value instanceof DBRef) {
     return 'DBRef';
+  }
+  if (Buffer.isBuffer(value) || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    // Byte arrays (e.g. raw `_id` from other drivers, ThumbnailPhoto payloads)
+    // must be treated as an opaque binary value, never as a nested document.
+    return 'Binary';
   }
   if (value instanceof Code) {
     return 'JavaScript';
@@ -368,6 +343,70 @@ function isPlainObject(value: unknown): boolean {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** A raw byte buffer in any of the shapes it can arrive in. */
+function isByteBuffer(value: unknown): boolean {
+  if (Buffer.isBuffer(value)) {
+    return true;
+  }
+  if (ArrayBuffer.isView(value)) {
+    return true;
+  }
+  if (value instanceof ArrayBuffer) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.every((item) => typeof item === 'number');
+  }
+  if (isPlainObject(value)) {
+    return isNumericIndexedObject(value);
+  }
+  return false;
+}
+
+/** A BSON Binary instance, detected by shape rather than `instanceof` (the
+ * bundle can contain two copies of bson, one from the driver and one direct). */
+function isBinaryInstance(value: unknown): boolean {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  const obj = value as Record<string, unknown>;
+  return typeof obj.sub_type === 'number' && 'buffer' in obj && isByteBuffer(obj.buffer);
+}
+
+/** Detect a Binary in any of the shapes produced by drivers/serialisation:
+ *  - canonical `{ sub_type, buffer, position }`
+ *  - a wrapper object whose only key is `buffer`, holding bytes or a Binary
+ *    (e.g. `_id` = `{ buffer: Binary }` returned by some drivers). */
+function isBinaryLike(value: unknown): boolean {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  if (isBinaryInstance(value)) {
+    return true;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length === 1 && 'buffer' in obj) {
+    const buffer = obj.buffer;
+    if (isByteBuffer(buffer) || isBinaryInstance(buffer)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** True when the value looks like a `{ "0": …, "1": …, … }` byte buffer. */
+function isNumericIndexedObject(value: unknown): boolean {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  const keys = Object.keys(value as Record<string, unknown>);
+  if (keys.length === 0) {
+    return false;
+  }
+  return keys.every((key) => /^\d+$/.test(key));
+}
+
 function serialiseValue(value: unknown): string {
   try {
     if (value instanceof ObjectId) {
@@ -384,6 +423,30 @@ function serialiseValue(value: unknown): string {
     }
     if (value instanceof Binary) {
       return `Binary(${value.toString('base64')})`;
+    }
+    if (Buffer.isBuffer(value)) {
+      return `Binary(${value.toString('base64')})`;
+    }
+    if (ArrayBuffer.isView(value)) {
+      return `Binary(${Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64')})`;
+    }
+    if (value instanceof ArrayBuffer) {
+      return `Binary(${Buffer.from(value).toString('base64')})`;
+    }
+    if (isBinaryLike(value)) {
+      const obj = value as Record<string, unknown>;
+      const buf = Buffer.isBuffer(obj.buffer)
+        ? obj.buffer
+        : ArrayBuffer.isView(obj.buffer)
+          ? Buffer.from((obj.buffer as ArrayBufferView).buffer, (obj.buffer as ArrayBufferView).byteOffset, (obj.buffer as ArrayBufferView).byteLength)
+          : obj.buffer instanceof ArrayBuffer
+            ? Buffer.from(obj.buffer)
+            : Array.isArray(obj.buffer)
+              ? Buffer.from(obj.buffer as number[])
+              : isNumericIndexedObject(obj.buffer)
+                ? Buffer.from(Object.values(obj.buffer as Record<string, unknown>) as number[])
+                : undefined;
+      return buf ? `Binary(${buf.toString('base64')})` : 'Binary';
     }
     if (isPlainObject(value) || Array.isArray(value)) {
       return JSON.stringify(value);

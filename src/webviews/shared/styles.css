@@ -77,8 +77,10 @@ body {
 }
 
 .mc-toolbar[hidden],
-.mc-querybar[hidden] {
-  display: none;
+.mc-querybar[hidden],
+.mc-explain-visual[hidden],
+.mc-explain-raw[hidden] {
+  display: none !important;
 }
 
 .mc-toolbar .spacer {
@@ -1396,6 +1398,9 @@ body {
   margin: 0;
   font-family: var(--mc-font-mono);
   text-align: right;
+  max-width: 320px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .mc-explain-summary {
@@ -1510,6 +1515,85 @@ body {
   letter-spacing: 0.05em;
   opacity: 0.7;
   margin: 8px 0 4px;
+}
+
+/* ── validation ── */
+
+.mc-validation-form {
+  display: grid;
+  gap: 12px;
+  width: min(720px, 80vw);
+}
+
+.mc-validation-view {
+  display: grid;
+  gap: 12px;
+  width: min(900px, 100%);
+}
+
+.mc-validation-zero {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 24px;
+  border: 1px dashed var(--vscode-panel-border);
+  border-radius: 8px;
+}
+
+.mc-zero-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.mc-zero-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.mc-validation-builder {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  background: var(--vscode-sideBar-background);
+}
+
+.mc-validation-rules {
+  display: grid;
+  gap: 6px;
+}
+
+.mc-validation-rule {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  background: var(--vscode-editor-background);
+}
+
+.mc-validation-rule-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mc-validation-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.mc-badge {
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--vscode-badge-background, var(--vscode-textBlockQuote-background));
+  color: var(--vscode-badge-foreground, var(--vscode-foreground));
+  font-size: 10px;
 }
 
 /* ── server status ── */

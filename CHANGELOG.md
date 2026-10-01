@@ -2,6 +2,30 @@
 
 All notable changes to this extension are documented in this file.
 
+## 0.4.0 - 2026-10-01
+
+### Added
+
+- Compass-style Schema Validation: generate rules from schema analysis, add rules manually via the rule builder, edit validation level/action, and remove individual rules.
+- Zero-state for the Validation tab with "Generate rules" and "Add rule" actions.
+- Documents `find` now returns the matched document count and estimated collection total.
+
+### Changed
+
+- Aggregation Explain now opens in a modal with Visual Tree / Raw Output tabs, matching the Documents panel.
+- Validation rules are rendered as a readable list on the Validation tab with direct rule removal.
+
+### Fixed
+
+- Documents pagination (First / Prev / Next) buttons no longer stay permanently disabled.
+- Explain Visual Tree / Raw Output tab switching now hides the inactive view correctly.
+- Index bounds in Explain output are rendered as human-readable field → range pairs instead of escaped JSON.
+- Schema analysis no longer expands binary fields (`_id`, `[]byte`, GUID/UUID) into per-byte pseudo-fields such as `_id.buffer.0`.
+- Schema analysis now includes top-level fields and is significantly faster on large collections.
+- Editing a connection no longer overwrites a custom server-selection timeout or notes.
+- Removing the last validation rule clears the validator instead of leaving an empty `$jsonSchema`.
+- Empty validation rules are ignored when saving.
+
 ## 0.3.0 - 2026-10-01
 
 ### Added

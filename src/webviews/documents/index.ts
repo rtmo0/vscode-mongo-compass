@@ -10,6 +10,7 @@ import {
   createSyntaxEditor,
   createExplainView,
   createJsonTree,
+  highlightJson,
   formatNumber,
   debounce
 } from '../shared/client';
@@ -58,9 +59,49 @@ interface IndexesData {
   indexSizes: Record<string, number>;
 }
 
+interface SchemaType {
+  name: string;
+  count: number;
+  probability: number;
+  unique?: number;
+  values?: unknown[];
+  minLength?: number;
+  maxLength?: number;
+  averageLength?: number;
+  min?: number;
+  max?: number;
+  average?: number;
+}
+
+interface SchemaField {
+  path: string;
+  name: string;
+  count: number;
+  probability: number;
+  types: SchemaType[];
+}
+
+interface SchemaData {
+  namespace: string;
+  sampledDocuments: number;
+  totalDocuments: number | null;
+  fields: SchemaField[];
+  suggestions: string[];
+  elapsedMS: number;
+}
+
+interface ValidationData {
+  namespace: string;
+  validator: unknown;
+  validationLevel: string;
+  validationAction: string;
+}
+
+type SectionId = 'documents' | 'indexes' | 'schema' | 'validation';
+
 interface UiState {
   namespace: string;
-  activeSection: 'documents' | 'indexes';
+  activeSection: SectionId;
   viewMode: 'list' | 'table' | 'json';
   query: QueryState;
   documents: string[];
@@ -68,6 +109,8 @@ interface UiState {
   totalCount: number | null;
   elapsedMS: number;
   indexes: IndexesData | null;
+  schema: SchemaData | null;
+  validation: ValidationData | null;
   loading: boolean;
   error: string | null;
 }
@@ -96,11 +139,15 @@ let state: UiState = getState<UiState>({
   totalCount: null,
   elapsedMS: 0,
   indexes: null,
+  schema: null,
+  validation: null,
   loading: false,
   error: null
 });
 state.activeSection ??= 'documents';
 state.indexes ??= null;
+state.schema ??= null;
+state.validation ??= null;
 
 // ───────────────────────────── element refs ─────────────────────────────
 
@@ -123,6 +170,8 @@ const modalRoot = $('modal-root');
 const bulkMenuEl = $('bulk-menu');
 const documentsToolbarEl = $('documents-toolbar');
 const indexesToolbarEl = $('indexes-toolbar');
+const schemaToolbarEl = $('schema-toolbar');
+const validationToolbarEl = $('validation-toolbar');
 const documentsQuerybarEl = $('documents-querybar');
 
 // ───────────────────────────── init ─────────────────────────────
@@ -198,8 +247,14 @@ $('btn-view-table').addEventListener('click', () => setViewMode('table'));
 $('btn-view-json').addEventListener('click', () => setViewMode('json'));
 $('tab-documents').addEventListener('click', () => switchSection('documents'));
 $('tab-indexes').addEventListener('click', () => switchSection('indexes'));
+$('tab-schema').addEventListener('click', () => switchSection('schema'));
+$('tab-validation').addEventListener('click', () => switchSection('validation'));
 $('btn-create-index').addEventListener('click', () => showCreateIndexModal());
 $('btn-indexes-refresh').addEventListener('click', () => void loadIndexes());
+$('btn-analyze-schema').addEventListener('click', () => showAnalyzeSchemaModal());
+$('btn-schema-refresh').addEventListener('click', () => void loadSchema());
+$('btn-edit-validation').addEventListener('click', () => showValidationModal());
+$('btn-validation-refresh').addEventListener('click', () => void loadValidation());
 
 $('toggle-options').addEventListener('click', () => {
   optionsEl.classList.toggle('collapsed');
@@ -292,12 +347,16 @@ function setViewMode(mode: 'list' | 'table' | 'json'): void {
   persist();
 }
 
-function switchSection(section: 'documents' | 'indexes'): void {
+function switchSection(section: SectionId): void {
   state.activeSection = section;
   render();
   persist();
   if (section === 'indexes' && !state.indexes) {
     void loadIndexes();
+  } else if (section === 'schema' && !state.schema) {
+    void loadSchema();
+  } else if (section === 'validation' && !state.validation) {
+    void loadValidation();
   }
 }
 
@@ -316,11 +375,45 @@ async function loadIndexes(): Promise<void> {
   }
 }
 
+async function loadSchema(queryText?: string, sampleSize?: number): Promise<void> {
+  state.loading = true;
+  state.error = null;
+  render();
+  try {
+    const result = await request<{ data: SchemaData }>('analyzeSchema', { queryText, sampleSize });
+    state.schema = result.data;
+  } catch (err) {
+    state.error = (err as Error).message;
+  } finally {
+    state.loading = false;
+    render();
+    persist();
+  }
+}
+
+async function loadValidation(): Promise<void> {
+  state.loading = true;
+  state.error = null;
+  render();
+  try {
+    const result = await request<{ data: ValidationData }>('getValidation');
+    state.validation = result.data;
+  } catch (err) {
+    state.error = (err as Error).message;
+  } finally {
+    state.loading = false;
+    render();
+    persist();
+  }
+}
+
 // ───────────────────────────── rendering ─────────────────────────────
 
 function render(): void {
   namespaceEl.textContent = state.namespace;
   $('indexes-namespace').textContent = state.namespace;
+  $('schema-namespace').textContent = state.namespace;
+  $('validation-namespace').textContent = state.namespace;
   renderSectionTabs();
   renderViewButtons();
   renderStatus();
@@ -329,13 +422,20 @@ function render(): void {
 }
 
 function renderSectionTabs(): void {
-  const showingIndexes = state.activeSection === 'indexes';
-  documentsToolbarEl.hidden = showingIndexes;
-  documentsQuerybarEl.hidden = showingIndexes;
-  indexesToolbarEl.hidden = !showingIndexes;
-  for (const [id, section] of [['tab-documents', 'documents'], ['tab-indexes', 'indexes']] as const) {
+  const section = state.activeSection;
+  documentsToolbarEl.hidden = section !== 'documents';
+  documentsQuerybarEl.hidden = section !== 'documents';
+  indexesToolbarEl.hidden = section !== 'indexes';
+  schemaToolbarEl.hidden = section !== 'schema';
+  validationToolbarEl.hidden = section !== 'validation';
+  for (const [id, idSection] of [
+    ['tab-documents', 'documents'],
+    ['tab-indexes', 'indexes'],
+    ['tab-schema', 'schema'],
+    ['tab-validation', 'validation']
+  ] as const) {
     const button = $(id);
-    const active = state.activeSection === section;
+    const active = section === idSection;
     button.classList.toggle('active', active);
     button.setAttribute('aria-selected', String(active));
   }
@@ -369,6 +469,18 @@ function renderStatus(): void {
       : 'Index information';
     return;
   }
+  if (state.activeSection === 'schema') {
+    statusTextEl.textContent = state.schema
+      ? `${formatNumber(state.schema.fields.length)} fields · ${formatNumber(state.schema.sampledDocuments)} sampled`
+      : 'Schema analysis';
+    return;
+  }
+  if (state.activeSection === 'validation') {
+    statusTextEl.textContent = state.validation
+      ? `Level: ${state.validation.validationLevel} · Action: ${state.validation.validationAction}`
+      : 'Validation rules';
+    return;
+  }
   const parts: string[] = [];
   if (state.count !== null) {
     parts.push(`${formatNumber(state.count)} matched`);
@@ -387,15 +499,29 @@ function renderContent(): void {
   clear(contentEl);
 
   if (state.loading) {
+    const loadingText =
+      state.activeSection === 'indexes' ? 'Loading indexes…' :
+      state.activeSection === 'schema' ? 'Analyzing schema…' :
+      state.activeSection === 'validation' ? 'Loading validation rules…' :
+      'Loading documents…';
     contentEl.append(
-        el('div', { className: 'mc-empty' }, el('span', { className: 'mc-spinner' }),
-          state.activeSection === 'indexes' ? 'Loading indexes…' : 'Loading documents…')
+        el('div', { className: 'mc-empty' }, el('span', { className: 'mc-spinner' }), loadingText)
     );
     return;
   }
 
   if (state.activeSection === 'indexes') {
     contentEl.append(renderIndexes());
+    return;
+  }
+
+  if (state.activeSection === 'schema') {
+    contentEl.append(renderSchema());
+    return;
+  }
+
+  if (state.activeSection === 'validation') {
+    contentEl.append(renderValidation());
     return;
   }
 
@@ -561,6 +687,601 @@ function dropEmbeddedIndex(name: string): void {
       }
     }
   });
+}
+
+// ───────────────────────────── schema ─────────────────────────────
+
+function renderSchema(): HTMLElement {
+  const data = state.schema;
+  if (!data) {
+    return el('div', { className: 'mc-empty' },
+      el('span', { text: 'No schema data. Click "Analyze" to sample this collection.' })
+    );
+  }
+
+  const wrap = el('div', { className: 'mc-schema-view' });
+
+  const summary = el('dl', { className: 'mc-kv' });
+  summary.append(
+    el('dt', { text: 'Namespace' }), el('dd', { text: data.namespace }),
+    el('dt', { text: 'Sampled' }), el('dd', { text: formatNumber(data.sampledDocuments) }),
+    el('dt', { text: 'Total docs' }), el('dd', { text: data.totalDocuments !== null ? formatNumber(data.totalDocuments) : '—' }),
+    el('dt', { text: 'Fields' }), el('dd', { text: formatNumber(data.fields.length) }),
+    el('dt', { text: 'Analysis time' }), el('dd', { text: `${data.elapsedMS} ms` })
+  );
+  wrap.append(summary);
+
+  if (data.suggestions.length > 0) {
+    wrap.append(el('div', { className: 'mc-section-title', text: 'Insights' }));
+    for (const suggestion of data.suggestions) {
+      wrap.append(el('div', { className: 'mc-insight', text: suggestion }));
+    }
+  }
+
+  wrap.append(el('div', { className: 'mc-section-title', text: 'Fields' }));
+
+  if (data.fields.length === 0) {
+    wrap.append(el('div', { className: 'mc-empty', text: 'No fields found in the sample.' }));
+    return wrap;
+  }
+
+  const table = el('table', { className: 'mc-table mc-schema-table' });
+  const thead = el('thead');
+  const headRow = el('tr');
+  for (const col of ['Field', 'Presence', 'Types', 'Statistics']) {
+    headRow.append(el('th', { text: col }));
+  }
+  thead.append(headRow);
+  const tbody = el('tbody');
+
+  for (const field of data.fields) {
+    const row = el('tr');
+    row.append(el('td', { className: 'mc-mono', text: field.path }));
+
+    const presenceCell = el('td');
+    const pct = Math.round(field.probability * 100);
+    presenceCell.append(
+      el('div', { text: `${pct}%` }),
+      el('div', { className: 'mc-bar' }, el('span', { style: `width:${pct}%` } as never))
+    );
+    row.append(presenceCell);
+
+    const typesText = field.types
+      .map((t) => `${t.name} (${Math.round(t.probability * 100)}%)`)
+      .join(', ');
+    row.append(el('td', { text: typesText }));
+
+    const statsCell = el('td');
+    const statParts: string[] = [];
+    for (const type of field.types) {
+      if (type.unique !== undefined) {
+        statParts.push(`unique: ${type.unique}`);
+      }
+      if (type.minLength !== undefined) {
+        statParts.push(`len: ${type.minLength}–${type.maxLength} (avg ${type.averageLength})`);
+      }
+      if (type.min !== undefined) {
+        statParts.push(`range: ${type.min}–${type.max} (avg ${type.average})`);
+      }
+    }
+    statsCell.textContent = statParts.join(' · ') || '—';
+    row.append(statsCell);
+
+    tbody.append(row);
+  }
+  table.append(thead, tbody);
+  wrap.append(table);
+
+  return wrap;
+}
+
+function showAnalyzeSchemaModal(): void {
+  const body = el('div');
+  const queryEditor = createSyntaxEditor('{}', 4);
+  const queryField = el('div', { className: 'mc-field' });
+  queryField.append(el('label', { text: 'Query filter (optional)' }), queryEditor.element);
+
+  const sampleSizeWrap = el('div', { className: 'mc-field' });
+  const sampleSizeInput = el('input', { className: 'mc-input', type: 'number' }) as HTMLInputElement;
+  sampleSizeInput.value = '1000';
+  sampleSizeWrap.append(el('label', { text: 'Sample size' }), sampleSizeInput);
+
+  body.append(queryField, sampleSizeWrap);
+
+  openModal({
+    title: 'Analyze schema',
+    body,
+    primaryLabel: 'Analyze',
+    onPrimary: async () => {
+      const queryText = queryEditor.textarea.value.trim();
+      const sampleSize = Number(sampleSizeInput.value) || 1000;
+      closeModal();
+      await loadSchema(queryText, sampleSize);
+    }
+  });
+}
+
+// ───────────────────────────── validation ─────────────────────────────
+
+function hasValidator(data: ValidationData | null): boolean {
+  if (!data?.validator || typeof data.validator !== 'object') {
+    return false;
+  }
+  const validator = data.validator as Record<string, unknown>;
+  const keys = Object.keys(validator);
+  if (keys.length === 0) {
+    return false;
+  }
+  // A validator that only wraps an empty `$jsonSchema` (e.g. after removing
+  // the last rule) is effectively empty — show the zero-state.
+  if (keys.length === 1 && keys[0] === '$jsonSchema') {
+    const schema = validator.$jsonSchema as Record<string, unknown> | undefined;
+    if (schema && typeof schema === 'object') {
+      const properties = schema.properties;
+      const meaningfulKeys = Object.keys(schema).filter((k) => k !== 'bsonType');
+      const hasProperties = properties && typeof properties === 'object' && Object.keys(properties as object).length > 0;
+      const hasOtherRules = meaningfulKeys.some((k) => {
+        const value = schema[k];
+        if (k === 'required') {
+          return Array.isArray(value) && value.length > 0;
+        }
+        return value !== undefined;
+      });
+      if (!hasProperties && !hasOtherRules) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function renderValidation(): HTMLElement {
+  const data = state.validation;
+  if (!data) {
+    return el('div', { className: 'mc-empty' },
+      el('span', { text: 'No validation data.' })
+    );
+  }
+
+  const wrap = el('div', { className: 'mc-validation-view' });
+
+  if (!hasValidator(data)) {
+    // Compass zero-state: no rules yet, offer generate / add-rule actions.
+    const zero = el('div', { className: 'mc-validation-zero' });
+    zero.append(
+      el('div', { className: 'mc-zero-title', text: 'Create validation rules' }),
+      el('p', {
+        className: 'mc-muted',
+        text: 'Generate rules via schema analysis from existing sample data, or add them manually to enforce document structure during updates and inserts.'
+      })
+    );
+    const actions = el('div', { className: 'mc-zero-actions' });
+    const generateBtn = el('button', { className: 'mc-btn primary', text: 'Generate rules' });
+    generateBtn.addEventListener('click', () => void generateValidationRules());
+    const addRuleBtn = el('button', { className: 'mc-btn', text: 'Add rule' });
+    addRuleBtn.addEventListener('click', () => showValidationModal());
+    actions.append(generateBtn, addRuleBtn);
+    zero.append(actions);
+    wrap.append(zero);
+    return wrap;
+  }
+
+  const summary = el('dl', { className: 'mc-kv' });
+  summary.append(
+    el('dt', { text: 'Namespace' }), el('dd', { text: data.namespace }),
+    el('dt', { text: 'Level' }), el('dd', { text: data.validationLevel }),
+    el('dt', { text: 'Action' }), el('dd', { text: data.validationAction })
+  );
+  wrap.append(summary);
+
+  const schema = extractJsonSchema(data.validator);
+  if (schema) {
+    wrap.append(el('div', { className: 'mc-section-title', text: 'Rules' }));
+    const rules = Object.keys(schema.properties);
+    if (rules.length === 0) {
+      wrap.append(el('div', { className: 'mc-muted', text: 'No field rules (validator uses a custom expression).' }));
+    } else {
+      const list = el('div', { className: 'mc-validation-rules' });
+      for (const field of rules) {
+        const rule = schema.properties[field];
+        const row = el('div', { className: 'mc-validation-rule' });
+        const info = el('div', { className: 'mc-validation-rule-info' });
+        info.append(
+          el('span', { className: 'mc-mono', text: field }),
+          el('span', { className: 'mc-muted', text: formatRuleType(rule.bsonType) })
+        );
+        if (schema.required.includes(field)) {
+          info.append(el('span', { className: 'mc-badge', text: 'required' }));
+        }
+        if (rule.unique) {
+          info.append(el('span', { className: 'mc-badge', text: 'unique' }));
+        }
+        const removeBtn = el('button', { className: 'mc-btn icon-only', text: '🗑', title: `Remove ${field} rule`, type: 'button' });
+        removeBtn.addEventListener('click', () => void removeValidationRule(field));
+        row.append(info, removeBtn);
+        list.append(row);
+      }
+      wrap.append(list);
+    }
+  }
+
+  wrap.append(el('div', { className: 'mc-section-title', text: 'Validator' }));
+  const pre = el('pre', { className: 'mc-mono' });
+  pre.innerHTML = highlightJson(data.validator);
+  wrap.append(pre);
+  return wrap;
+}
+
+function formatRuleType(bsonType: unknown): string {
+  if (Array.isArray(bsonType)) {
+    return bsonType.join(' | ');
+  }
+  return String(bsonType ?? 'unknown');
+}
+
+/** Remove a single field rule from the stored validator and persist it. */
+async function removeValidationRule(field: string): Promise<void> {
+  const data = state.validation;
+  if (!data?.validator || typeof data.validator !== 'object') {
+    return;
+  }
+  const validator = JSON.parse(JSON.stringify(data.validator)) as Record<string, unknown>;
+  const schema = (validator.$jsonSchema ?? {}) as Record<string, unknown>;
+  const properties = (schema.properties ?? {}) as Record<string, unknown>;
+  const required = Array.isArray(schema.required) ? (schema.required as string[]) : [];
+
+  delete properties[field];
+  schema.properties = properties;
+  const remainingRequired = required.filter((f) => f !== field);
+  if (remainingRequired.length > 0) {
+    schema.required = remainingRequired;
+  } else {
+    delete schema.required; // an empty required array is invalid in $jsonSchema
+  }
+
+  // When no field rules remain, clear the validator entirely so the tab
+  // returns to the zero-state (instead of an empty $jsonSchema).
+  const remainingFields = Object.keys(properties);
+  const validatorText =
+    remainingFields.length === 0
+      ? ''
+      : JSON.stringify(validator, null, 2);
+
+  try {
+    await request('setValidation', {
+      validatorText,
+      validationLevel: data.validationLevel,
+      validationAction: data.validationAction
+    });
+    await loadValidation();
+    setStatusMessage(
+      remainingFields.length === 0
+        ? 'Validation rules removed.'
+        : `Rule for "${field}" removed.`
+    );
+  } catch (err) {
+    setStatusMessage((err as Error).message, true);
+  }
+}
+
+/** Generate validation rules from schema analysis (Compass "Generate rules"). */
+async function generateValidationRules(): Promise<void> {
+  setStatusMessage('Generating rules from schema analysis…');
+  try {
+    const result = await request<{
+      validator: Record<string, unknown>;
+      validationLevel: string;
+      validationAction: string;
+      sampledDocuments: number;
+      totalDocuments: number | null;
+    }>('generateValidation', {});
+    await request('setValidation', {
+      validatorText: JSON.stringify(result.validator, null, 2),
+      validationLevel: result.validationLevel,
+      validationAction: result.validationAction
+    });
+    await loadValidation();
+    setStatusMessage(`Validation rules generated from ${formatNumber(result.sampledDocuments)} sampled documents.`);
+  } catch (err) {
+    setStatusMessage((err as Error).message, true);
+  }
+}
+
+const BSON_TYPES = [
+  'string',
+  'int',
+  'long',
+  'double',
+  'decimal',
+  'bool',
+  'objectId',
+  'date',
+  'timestamp',
+  'object',
+  'array',
+  'null',
+  'binData',
+  'regex',
+  'uuid'
+];
+
+/** Open the Validation editor: rule builder + raw JSON editor + level/action. */
+function showValidationModal(): void {
+  const data = state.validation;
+  // Existing $jsonSchema (when present) seeds the builder.
+  const existingSchema = extractJsonSchema(data?.validator);
+  const workingSchema: {
+    bsonType: string;
+    required: string[];
+    properties: Record<string, { bsonType: string; unique?: boolean }>;
+  } = existingSchema ?? { bsonType: 'object', required: [], properties: {} };
+
+  const body = el('div', { className: 'mc-validation-form' });
+
+  // ── rule builder ──
+  const builderTitle = el('div', { className: 'mc-section-title', text: 'Rule builder' });
+  body.append(builderTitle);
+
+  const rulesList = el('div', { className: 'mc-validation-rules' });
+
+  // ── raw editor (created first so the builder can sync it) ──
+  const initialSchema: Record<string, unknown> = {
+    bsonType: workingSchema.bsonType,
+    properties: workingSchema.properties
+  };
+  if (workingSchema.required.length > 0) {
+    initialSchema.required = workingSchema.required;
+  }
+  const currentValidator = data?.validator
+    ? JSON.stringify(data.validator, null, 2)
+    : JSON.stringify({ $jsonSchema: initialSchema }, null, 2);
+  const validatorEditor = createSyntaxEditor(currentValidator, 14);
+
+  const syncRawEditor = (): void => {
+    const schemaToEmit: Record<string, unknown> = {
+      bsonType: workingSchema.bsonType,
+      properties: workingSchema.properties
+    };
+    if (workingSchema.required.length > 0) {
+      schemaToEmit.required = workingSchema.required;
+    }
+    validatorEditor.textarea.value = JSON.stringify({ $jsonSchema: schemaToEmit }, null, 2);
+    validatorEditor.textarea.dispatchEvent(new Event('input'));
+  };
+
+  const renderRules = (): void => {
+    clear(rulesList);
+    const fields = Object.keys(workingSchema.properties);
+    if (fields.length === 0) {
+      rulesList.append(el('div', { className: 'mc-muted', text: 'No rules yet. Add a field rule below.' }));
+    }
+    for (const field of fields) {
+      const rule = workingSchema.properties[field];
+      const row = el('div', { className: 'mc-validation-rule' });
+      const info = el('div', { className: 'mc-validation-rule-info' });
+      info.append(
+        el('span', { className: 'mc-mono', text: field }),
+        el('span', { className: 'mc-muted', text: formatRuleType(rule.bsonType) })
+      );
+      if (workingSchema.required.includes(field)) {
+        info.append(el('span', { className: 'mc-badge', text: 'required' }));
+      }
+      if (rule.unique) {
+        info.append(el('span', { className: 'mc-badge', text: 'unique' }));
+      }
+      const removeBtn = el('button', { className: 'mc-btn icon-only', text: '🗑', title: `Remove ${field} rule`, type: 'button' });
+      removeBtn.addEventListener('click', () => {
+        delete workingSchema.properties[field];
+        workingSchema.required = workingSchema.required.filter((f) => f !== field);
+        renderRules();
+        syncRawEditor();
+      });
+      row.append(info, removeBtn);
+      rulesList.append(row);
+    }
+  };
+
+  const fieldSelect = el('select', { className: 'mc-select' }) as HTMLSelectElement;
+  const fieldOption = el('option', { value: '', text: '— loading fields… —' }) as HTMLOptionElement;
+  fieldSelect.append(fieldOption);
+  // Load field suggestions in the background so the modal opens instantly.
+  void request<{ fields: string[] }>('schemaFields')
+    .then((result) => {
+      fieldOption.textContent = '— pick an existing field —';
+      for (const field of result.fields ?? []) {
+        fieldSelect.append(el('option', { value: field, text: field }) as HTMLOptionElement);
+      }
+    })
+    .catch(() => {
+      fieldOption.textContent = '— type a field name —';
+    });
+  const customField = el('input', { className: 'mc-input', placeholder: 'or type a field name' }) as HTMLInputElement;
+  customField.addEventListener('input', () => {
+    fieldSelect.value = '';
+  });
+  fieldSelect.addEventListener('change', () => {
+    if (fieldSelect.value) {
+      customField.value = '';
+    }
+  });
+
+  const typeSelect = el('select', { className: 'mc-select' }) as HTMLSelectElement;
+  for (const type of BSON_TYPES) {
+    typeSelect.append(el('option', { value: type, text: type }));
+  }
+  const requiredCheck = createCheckbox('Required');
+  const uniqueCheck = createCheckbox('Unique');
+
+  const addRuleButton = el('button', { className: 'mc-btn', text: '＋ Add rule', type: 'button' });
+  addRuleButton.addEventListener('click', () => {
+    const field = (fieldSelect.value || customField.value).trim();
+    if (!field) {
+      showFieldError('Choose a field or type a name first.');
+      return;
+    }
+    workingSchema.properties[field] = {
+      bsonType: typeSelect.value,
+      unique: uniqueCheck.input.checked || undefined
+    };
+    if (requiredCheck.input.checked && !workingSchema.required.includes(field)) {
+      workingSchema.required.push(field);
+    }
+    if (!requiredCheck.input.checked) {
+      workingSchema.required = workingSchema.required.filter((f) => f !== field);
+    }
+    customField.value = '';
+    fieldSelect.value = '';
+    requiredCheck.input.checked = false;
+    uniqueCheck.input.checked = false;
+    renderRules();
+    syncRawEditor();
+  });
+
+  body.append(
+    el('div', { className: 'mc-validation-builder' },
+      el('div', { className: 'mc-field' }, el('label', { text: 'Field' }), fieldSelect, customField),
+      el('div', { className: 'mc-field' }, el('label', { text: 'Type' }), typeSelect),
+      requiredCheck.wrap,
+      uniqueCheck.wrap,
+      addRuleButton
+    ),
+    rulesList
+  );
+
+  // ── raw editor ──
+  const validatorField = el('div', { className: 'mc-field' });
+  validatorField.append(el('label', { text: 'Validator JSON (advanced)' }), validatorEditor.element);
+
+  body.append(validatorField);
+
+  // ── level / action ──
+  const levelSelect = el('select', { className: 'mc-select' }) as HTMLSelectElement;
+  for (const level of ['off', 'strict', 'moderate']) {
+    const option = el('option', { value: level, text: level }) as HTMLOptionElement;
+    option.selected = data?.validationLevel === level;
+    levelSelect.append(option);
+  }
+  const actionSelect = el('select', { className: 'mc-select' }) as HTMLSelectElement;
+  for (const action of ['error', 'warn']) {
+    const option = el('option', { value: action, text: action }) as HTMLOptionElement;
+    option.selected = data?.validationAction === action;
+    actionSelect.append(option);
+  }
+  const optionsRow = el('div', { className: 'mc-validation-options' });
+  optionsRow.append(
+    el('div', { className: 'mc-field' }, el('label', { text: 'Validation level' }), levelSelect),
+    el('div', { className: 'mc-field' }, el('label', { text: 'Validation action' }), actionSelect)
+  );
+  body.append(optionsRow);
+
+  renderRules();
+
+  openModal({
+    title: 'Edit validation rules',
+    body,
+    primaryLabel: 'Save',
+    onPrimary: async () => {
+      try {
+        const validatorText = validatorEditor.textarea.value.trim();
+        // Ignore an empty validator (no rules): saving `{ $jsonSchema:
+        // { bsonType: 'object', properties: {} } }` is pointless and would
+        // leave a dangling empty schema on the collection.
+        if (!validatorText || isEffectivelyEmptyValidator(validatorText)) {
+          closeModal();
+          setStatusMessage('No validation rules to save.');
+          return;
+        }
+        await request('setValidation', {
+          validatorText,
+          validationLevel: levelSelect.value,
+          validationAction: actionSelect.value
+        });
+        closeModal();
+        await loadValidation();
+        setStatusMessage('Validation rules updated.');
+      } catch (err) {
+        showFieldError((err as Error).message);
+      }
+    }
+  });
+}
+
+/** True when a validator JSON carries no meaningful rules. */
+function isEffectivelyEmptyValidator(validatorText: string): boolean {
+  try {
+    const parsed = JSON.parse(validatorText) as Record<string, unknown>;
+    const schema = parsed.$jsonSchema;
+    if (!schema || typeof schema !== 'object') {
+      return false;
+    }
+    const obj = schema as Record<string, unknown>;
+    const properties = obj.properties;
+    const hasProperties =
+      properties && typeof properties === 'object' && Object.keys(properties as object).length > 0;
+    const required = obj.required;
+    const hasRequired = Array.isArray(required) && required.length > 0;
+    // Only bsonType/properties/required are considered; anything else means
+    // the validator has real content.
+    const otherKeys = Object.keys(obj).filter(
+      (k) => k !== 'bsonType' && k !== 'properties' && k !== 'required'
+    );
+    return !hasProperties && !hasRequired && otherKeys.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Extract `$jsonSchema` from a stored validator, normalised into the shape the
+ * rule builder understands: each property becomes `{ bsonType: string, unique? }`.
+ * Nested documents and type arrays are rendered as text but cannot be edited
+ * visually — they stay intact in the raw JSON editor. */
+function extractJsonSchema(validator: unknown): {
+  bsonType: string;
+  required: string[];
+  properties: Record<string, { bsonType: string; unique?: boolean }>;
+} | undefined {
+  if (!validator || typeof validator !== 'object') {
+    return undefined;
+  }
+  const schema = (validator as Record<string, unknown>).$jsonSchema;
+  if (!schema || typeof schema !== 'object') {
+    return undefined;
+  }
+  const required = Array.isArray((schema as Record<string, unknown>).required)
+    ? ((schema as Record<string, unknown>).required as string[])
+    : [];
+  const rawProperties = ((schema as Record<string, unknown>).properties ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const properties: Record<string, { bsonType: string; unique?: boolean }> = {};
+  for (const [field, rawRule] of Object.entries(rawProperties)) {
+    properties[field] = normaliseRule(field, rawRule);
+  }
+  return {
+    bsonType: String((schema as Record<string, unknown>).bsonType ?? 'object'),
+    required,
+    properties
+  };
+}
+
+/** Convert a `$jsonSchema` property entry into the builder's simple form. */
+function normaliseRule(_field: string, rawRule: unknown): { bsonType: string; unique?: boolean } {
+  if (rawRule && typeof rawRule === 'object' && !Array.isArray(rawRule)) {
+    const obj = rawRule as Record<string, unknown>;
+    let bsonType = obj.bsonType;
+    if (Array.isArray(bsonType)) {
+      bsonType = bsonType.join(' | ');
+    } else if (bsonType === undefined || bsonType === null) {
+      bsonType = 'object';
+    }
+    const unique = obj.unique === true ? true : undefined;
+    return { bsonType: String(bsonType), unique };
+  }
+  if (Array.isArray(rawRule)) {
+    return { bsonType: rawRule.join(' | ') };
+  }
+  return { bsonType: String(rawRule ?? 'object') };
 }
 
 function showCreateIndexModal(): void {
@@ -822,7 +1543,7 @@ function renderJson(): HTMLElement {
 }
 
 function renderPagination(): void {
-  if (state.activeSection === 'indexes') {
+  if (state.activeSection !== 'documents') {
     paginationEl.style.display = 'none';
     return;
   }
@@ -835,10 +1556,17 @@ function renderPagination(): void {
   const to = state.query.skip + state.documents.length;
   const total = state.count ?? state.totalCount;
   pageInfoEl.textContent = total !== null ? `${from}–${to} of ${formatNumber(total)}` : `${from}–${to}`;
-  $('btn-first').setAttribute('disabled', state.query.skip === 0 ? 'true' : 'false');
-  $('btn-prev').setAttribute('disabled', state.query.skip === 0 ? 'true' : 'false');
+  setButtonDisabled('btn-first', state.query.skip === 0);
+  setButtonDisabled('btn-prev', state.query.skip === 0);
   const hasMore = state.count === null || state.query.skip + state.documents.length < state.count;
-  $('btn-next').setAttribute('disabled', hasMore ? 'false' : 'true');
+  setButtonDisabled('btn-next', !hasMore);
+}
+
+/** Enable/disable a button via the `disabled` property, not the attribute.
+ * `setAttribute('disabled', 'false')` still disables a button, since any
+ * non-empty attribute value counts as disabled in HTML. */
+function setButtonDisabled(id: string, disabled: boolean): void {
+  ($(id) as HTMLButtonElement).disabled = disabled;
 }
 
 function formatId(id: unknown): string {

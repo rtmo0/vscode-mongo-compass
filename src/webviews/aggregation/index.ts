@@ -281,9 +281,29 @@ async function count(): Promise<void> {
 async function explain(): Promise<void> {
   try {
     const result = await request('explain', payload());
-    clear(resultsEl); resultsEl.append(createExplainView(result as never));
-    resultsInfo.textContent = 'Explain plan';
+    showExplainModal(result);
   } catch (error) { state.error = (error as Error).message; render(); }
+}
+
+/** Explain opens in a modal with Visual Tree / Raw Output tabs, exactly like
+ * the Documents panel. */
+function showExplainModal(result: unknown): void {
+  clear(modalRoot);
+  const backdrop = el('div', { className: 'mc-modal-backdrop' });
+  const modal = el('div', { className: 'mc-modal' });
+  const close = (): void => clear(modalRoot);
+
+  const closeButton = el('button', { className: 'mc-btn primary', text: 'Close' });
+  closeButton.addEventListener('click', close);
+
+  modal.append(
+    el('h3', { text: `Explain plan — ${state.namespace}` }),
+    createExplainView(result as never),
+    el('div', { className: 'mc-modal-actions' }, closeButton)
+  );
+  backdrop.addEventListener('click', (event) => { if (event.target === backdrop) close(); });
+  backdrop.append(modal);
+  modalRoot.append(backdrop);
 }
 
 async function namedAction(type: 'savePipeline' | 'createView'): Promise<void> {

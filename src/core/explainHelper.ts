@@ -73,7 +73,7 @@ function toNode(plan: Document, executionStats: Document | undefined): ExplainNo
 
   for (const [key, label] of interesting) {
     if (label && plan[key] !== undefined) {
-      details[label] = stringify(plan[key]);
+      details[label] = key === 'indexBounds' ? formatIndexBounds(plan[key]) : stringify(plan[key]);
     }
   }
 
@@ -273,4 +273,39 @@ function stringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/** Render `indexBounds` as a compact, human-readable map instead of nested
+ * escaped JSON. The raw value is e.g. `{ field: ["[MinKey, MaxKey]"] }` where
+ * each bound is a string serialised by the server, so it would otherwise show
+ * up as `["[\"RUS\", \"RUS\"]"]` and overflow the explain card. */
+function formatIndexBounds(value: unknown): string {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value !== 'object') {
+    return stringify(value);
+  }
+  const entries = Object.entries(value as Record<string, unknown>).map(([field, bounds]) => {
+    let rendered: string;
+    if (Array.isArray(bounds)) {
+      // Strip one level of JSON-escaping added by the server for each bound.
+      // Each bound is a string such as `["RUS", "RUS"]` or `[MinKey, MaxKey]`
+      // and already carries its own brackets, so intervals are joined directly.
+      rendered = bounds
+        .map((b) => {
+          const text = String(b);
+          try {
+            return JSON.stringify(JSON.parse(text));
+          } catch {
+            return text;
+          }
+        })
+        .join(', ');
+    } else {
+      rendered = stringify(bounds);
+    }
+    return `${field}: ${rendered}`;
+  });
+  return entries.join('\n');
 }

@@ -194,10 +194,34 @@ export class DataService {
       .toArray();
     logger.info('Find completed', { ns: ns.toString(), documents: documents.length });
 
+    // Number of documents matching the filter (without skip/limit), used by the
+    // query bar to show "N matched". A rough collection total is fetched as well
+    // so the UI can show "M total" even before any documents are loaded.
+    const [count, totalCount] = await Promise.all([
+      coll
+        .countDocuments(query.filter as Filter<Document>, {
+          maxTimeMS: options.maxTimeMS,
+          signal: execution.signal
+        })
+        .catch((err) => {
+          logger.warn('Count failed', { ns: ns.toString(), error: (err as Error).message });
+          return null;
+        }),
+      coll
+        .estimatedDocumentCount({ maxTimeMS: options.maxTimeMS })
+        .catch((err) => {
+          logger.warn('Estimated count failed', {
+            ns: ns.toString(),
+            error: (err as Error).message
+          });
+          return null;
+        })
+    ]);
+
     return {
       documents,
-      count: null,
-      totalCount: null,
+      count,
+      totalCount,
       elapsedMS: Date.now() - started,
       query
     };

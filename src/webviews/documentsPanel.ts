@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
-import { EJSON, ObjectId, type Document } from 'bson';
+import { EJSON, type Document } from 'bson';
 import { BaseWebviewPanel } from './baseWebview';
 import { DataService, Namespace } from '../core/dataService';
 import type { ConnectionManager } from '../core/connectionManager';
@@ -11,6 +11,8 @@ import { parseShellBSON, parseSort, parseNumberOption } from '../core/bsonParser
 import { getConfig } from '../core/config';
 import { ImportExportService, type ExportFormat } from '../core/importExport';
 import { logger } from '../core/logger';
+import { convertFieldsToJsonSchema } from '../core/validationRules';
+import { bsonTypeName } from '../core/schemaAnalyzer';
 import type { QueryState } from '../core/types';
 
 interface DocumentsPanelState {
@@ -385,6 +387,72 @@ export class DocumentsPanel extends BaseWebviewPanel {
       }
       respond({ fields: [...fields].sort() });
     });
+
+    // ── schema ──
+    this.registerHandler('analyzeSchema', async (msg, respond) => {
+      const payload = msg.payload as { queryText?: string; sampleSize?: number };
+      const query = payload.queryText?.trim() ? parseShellBSON(payload.queryText) : {};
+      const service = await this.service();
+      const data = await service.analyzeSchema(
+        this.state.namespace,
+        query,
+        payload.sampleSize ?? getConfig().schemaSampleSize
+      );
+      respond({ data });
+    });
+
+    // ── validation rule generation (Compass-style) ──
+    this.registerHandler('generateValidation', async (msg, respond) => {
+      const payload = msg.payload as { sampleSize?: number };
+      const service = await this.service();
+      const analysis = await service.analyzeSchema(
+        this.state.namespace,
+        {},
+        payload.sampleSize ?? getConfig().schemaSampleSize
+      );
+      const jsonSchema = convertFieldsToJsonSchema(analysis.fields);
+      respond({
+        validator: { $jsonSchema: jsonSchema },
+        validationLevel: 'moderate',
+        validationAction: 'error',
+        sampledDocuments: analysis.sampledDocuments,
+        totalDocuments: analysis.totalDocuments
+      });
+    });
+
+    // ── validation ──
+    this.registerHandler('getValidation', async (_msg, respond) => {
+      const service = await this.service();
+      const info = await service.collectionInfo(this.state.namespace.database, this.state.namespace.collection);
+      const options = info?.options ?? {};
+      respond({
+        data: {
+          namespace: this.state.namespace.toString(),
+          validator: options.validator ?? null,
+          validationLevel: options.validationLevel ?? 'strict',
+          validationAction: options.validationAction ?? 'error'
+        }
+      });
+    });
+
+    this.registerHandler('setValidation', async (msg, respond) => {
+      const payload = msg.payload as {
+        validatorText: string;
+        validationLevel: string;
+        validationAction: string;
+      };
+      const validator = payload.validatorText.trim()
+        ? parseShellBSON(payload.validatorText)
+        : null;
+      const service = await this.service();
+      await service.setValidation(
+        this.state.namespace,
+        validator,
+        payload.validationLevel,
+        payload.validationAction
+      );
+      respond({ ok: true });
+    });
   }
 
   private connectionName(): string {
@@ -493,8 +561,18 @@ function collectPaths(doc: Document, prefix: string, out: Set<string>): void {
   for (const [key, value] of Object.entries(doc)) {
     const path = prefix ? `${prefix}.${key}` : key;
     out.add(path);
-    if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof ObjectId) && !(value instanceof Date)) {
+    // Descend only into real subdocuments and into documents stored inside
+    // arrays. Byte arrays (Buffer / Uint8Array / Binary) stay opaque so they
+    // are not expanded into `buffer.0`, `buffer.1`, … pseudo-fields.
+    const type = bsonTypeName(value);
+    if (type === 'Document') {
       collectPaths(value as Document, path, out);
+    } else if (type === 'Array') {
+      for (const item of value as unknown[]) {
+        if (bsonTypeName(item) === 'Document') {
+          collectPaths(item as Document, path, out);
+        }
+      }
     }
   }
 }
