@@ -310,6 +310,12 @@ export class AggregationPanel extends BaseWebviewPanel {
       respond({ code });
     });
 
+    this.registerHandler('copyDocument', async (msg, respond) => {
+      const payload = msg.payload as { documentText: string };
+      await vscode.env.clipboard.writeText(payload.documentText);
+      respond({ ok: true });
+    });
+
     this.registerHandler('copyShellSnippet', async (msg, respond) => {
       const payload = msg.payload as PipelinePayload;
       const pipeline = this.buildPipeline(this.pipelineStages(payload));

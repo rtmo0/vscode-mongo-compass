@@ -153,9 +153,9 @@ export function highlightJson(value: unknown, indent = 2): string {
   );
 }
 
-/** Render an expandable, compact JSON tree shared by document and aggregation views. */
+/** Render an expandable canonical Extended JSON tree shared by document and aggregation views. */
 export function createJsonTree(value: unknown, expanded = true): HTMLElement {
-  return renderJsonNode(value, 0, expanded, false);
+  return renderJsonNode(value, 0, expanded, false, true);
 }
 
 /** Render document fields as the collapsible tree used by list views. */
@@ -211,8 +211,8 @@ function renderFieldTreeRow(key: string, value: unknown, depth: number): HTMLEle
   return field;
 }
 
-function renderJsonNode(value: unknown, depth: number, expanded: boolean, trailingComma: boolean): HTMLElement {
-  if (!isJsonContainer(value)) {
+function renderJsonNode(value: unknown, depth: number, expanded: boolean, trailingComma: boolean, canonical = false): HTMLElement {
+  if (!isJsonContainer(value, canonical)) {
     return el('span', {
       className: `mc-json-value ${jsonValueClass(value)}`,
       text: formatJsonTreeValue(value)
@@ -240,7 +240,7 @@ function renderJsonNode(value: unknown, depth: number, expanded: boolean, traili
   const children = el('div', { className: 'mc-json-children' });
   children.hidden = !expanded;
   entries.forEach(([key, childValue], index) => {
-    children.append(renderJsonProperty(key, childValue, depth + 1, isArray, index < entries.length - 1));
+    children.append(renderJsonProperty(key, childValue, depth + 1, isArray, index < entries.length - 1, canonical));
   });
 
   const closing = el('div', {
@@ -263,7 +263,7 @@ function renderJsonNode(value: unknown, depth: number, expanded: boolean, traili
   return wrapper;
 }
 
-function renderJsonProperty(key: string, value: unknown, depth: number, parentIsArray: boolean, trailingComma: boolean): HTMLElement {
+function renderJsonProperty(key: string, value: unknown, depth: number, parentIsArray: boolean, trailingComma: boolean, canonical: boolean): HTMLElement {
   const property = el('div', { className: 'mc-json-property' });
   property.style.setProperty('--json-depth', String(depth));
   property.append(
@@ -271,13 +271,13 @@ function renderJsonProperty(key: string, value: unknown, depth: number, parentIs
     el('span', { className: 'mc-json-colon', text: ': ' })
   );
 
-  if (!isJsonContainer(value)) {
-    property.append(renderJsonNode(value, depth, false, false));
+  if (!isJsonContainer(value, canonical)) {
+    property.append(renderJsonNode(value, depth, false, false, canonical));
     if (trailingComma) property.append(el('span', { className: 'mc-json-punctuation', text: ',' }));
     return property;
   }
 
-  const nested = renderJsonNode(value, depth, false, trailingComma);
+  const nested = renderJsonNode(value, depth, false, trailingComma, canonical);
   nested.classList.add('mc-json-nested-node');
   property.append(nested.querySelector('.mc-json-line') as HTMLElement);
   const wrapper = el('div', { className: 'mc-json-property-node' }, property);
@@ -287,8 +287,8 @@ function renderJsonProperty(key: string, value: unknown, depth: number, parentIs
   return wrapper;
 }
 
-function isJsonContainer(value: unknown): value is Record<string, unknown> | unknown[] {
-  return value !== null && typeof value === 'object' && formatEjsonDate(value) === undefined;
+function isJsonContainer(value: unknown, canonical = false): value is Record<string, unknown> | unknown[] {
+  return value !== null && typeof value === 'object' && (canonical || formatEjsonDate(value) === undefined);
 }
 
 function jsonValueSummary(value: Record<string, unknown> | unknown[]): string {
@@ -326,8 +326,8 @@ function formatEjsonDate(value: object): string | undefined {
   if (raw === undefined) return undefined;
   const date = new Date(typeof raw === 'number' ? raw : /^-?\d+$/.test(raw) ? Number(raw) : raw);
   return Number.isNaN(date.getTime())
-    ? `ISODate(${JSON.stringify(String(raw))})`
-    : `ISODate(${JSON.stringify(date.toISOString())})`;
+    ? `ISODate('${String(raw)}')`
+    : `ISODate('${date.toISOString().replace('Z', '+00:00')}')`;
 }
 
 /** Create an editable textarea with a synchronized BSON/EJSON highlight layer. */

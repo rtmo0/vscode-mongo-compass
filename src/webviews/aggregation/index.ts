@@ -228,10 +228,24 @@ function renderResultJson(documents: Record<string, unknown>[]): HTMLElement {
   const container = el('div', { className: 'mc-json-list' });
   documents.forEach((document, index) => {
     const block = el('article', { className: 'mc-json-document mc-pipeline-result' });
-    block.append(
-      el('div', { className: 'mc-json-document-number', text: `Document ${index + 1}` }),
-      createJsonTree(document)
-    );
+    const header = el('div', { className: 'mc-json-document-number', text: `Document ${index + 1}` });
+    const copyButton = el('button', {
+      className: 'mc-btn icon-only mc-json-copy',
+      text: '⧉',
+      title: 'Copy document JSON',
+      ariaLabel: 'Copy document JSON'
+    });
+    copyButton.addEventListener('click', async () => {
+      try {
+        await request('copyDocument', { documentText: state.results[index] });
+        state.warning = `Document ${index + 1} copied to clipboard.`;
+      } catch (error) {
+        state.error = (error as Error).message;
+      }
+      render();
+    });
+    header.append(copyButton);
+    block.append(header, createJsonTree(document));
     container.append(block);
   });
   return container;

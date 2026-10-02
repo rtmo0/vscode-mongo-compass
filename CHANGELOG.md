@@ -2,6 +2,26 @@
 
 All notable changes to this extension are documented in this file.
 
+## 0.5.0 - 2026-10-02
+
+### Added
+
+- Copy-to-clipboard actions for individual documents in Documents and Aggregation JSON views.
+- Live affected-document counts while editing Bulk Update and Bulk Delete filters.
+
+### Changed
+
+- Documents and aggregation JSON views now render canonical MongoDB Extended JSON while preserving the existing expandable styling.
+- BSON dates in list and table views are displayed as readable `ISODate('…+00:00')` values.
+- Insert Document now explicitly accepts JSON and MongoDB Extended JSON and normalizes ObjectId values.
+
+### Fixed
+
+- Insert Document now passes canonical Extended JSON values such as `$oid`, `$date`, `$numberInt`, and `$binary` to MongoDB as their BSON types.
+- Insert errors now expose the underlying MongoDB error details.
+- Successful inserts no longer trigger competing refreshes that could report `This operation was aborted`.
+- Modal editors retain their entered value when the modal opens.
+
 ## 0.4.0 - 2026-10-01
 
 ### Added

@@ -715,6 +715,10 @@ body {
   font-weight: 600;
 }
 
+.mc-json-copy {
+  margin-left: auto;
+}
+
 .mc-json-document > .mc-json-node {
   padding: 2px 3px 3px;
   overflow: auto;

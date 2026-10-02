@@ -1,5 +1,4 @@
 import {
-  vscode,
   request,
   on,
   getState,
@@ -225,10 +224,6 @@ $('btn-agg').addEventListener('click', () => void request('openAggregation'));
 $('btn-bulk').addEventListener('click', (event) => {
   event.stopPropagation();
   bulkMenuEl.hidden = !bulkMenuEl.hidden;
-});
-$('menu-bulk-insert').addEventListener('click', () => {
-  bulkMenuEl.hidden = true;
-  showBulkInsertModal();
 });
 $('menu-bulk-update').addEventListener('click', () => {
   bulkMenuEl.hidden = true;
@@ -1532,11 +1527,26 @@ function renderJson(): HTMLElement {
   const container = el('div', { className: 'mc-json-list' });
   parsedDocuments().forEach((document, index) => {
     const block = el('section', { className: 'mc-json-document' });
-    block.append(el('div', {
+    const header = el('div', {
       className: 'mc-json-document-number',
       text: `Document ${state.query.skip + index + 1}`
-    }));
-    block.append(createJsonTree(document));
+    });
+    const copyButton = el('button', {
+      className: 'mc-btn icon-only mc-json-copy',
+      text: '⧉',
+      title: 'Copy document JSON',
+      ariaLabel: 'Copy document JSON'
+    });
+    copyButton.addEventListener('click', async () => {
+      try {
+        await request('copyDocument', { documentText: state.documents[index] });
+        setStatusMessage(`Document ${state.query.skip + index + 1} copied to clipboard.`);
+      } catch (err) {
+        setStatusMessage((err as Error).message, true);
+      }
+    });
+    header.append(copyButton);
+    block.append(header, createJsonTree(document));
     container.append(block);
   });
   return container;
@@ -1610,6 +1620,18 @@ function isEjsonScalar(value: object): boolean {
 
 function formatEjsonScalar(value: object): string | undefined {
   const obj = value as Record<string, unknown>;
+  if (obj.$date !== undefined) {
+    const dateValue = obj.$date;
+    const raw = dateValue !== null && typeof dateValue === 'object'
+      ? (dateValue as Record<string, unknown>).$numberLong
+      : dateValue;
+    if (typeof raw === 'string' || typeof raw === 'number') {
+      const date = new Date(typeof raw === 'string' && /^-?\d+$/.test(raw) ? Number(raw) : raw);
+      if (!Number.isNaN(date.getTime())) {
+        return `ISODate('${date.toISOString().replace('Z', '+00:00')}')`;
+      }
+    }
+  }
   if (typeof obj.$oid === 'string') {
     return `ObjectId("${obj.$oid}")`;
   }
@@ -1706,15 +1728,21 @@ function showInsertModal(): void {
   const template = '{\n  \n}';
   openModal({
     title: `Insert document into ${state.namespace}`,
-    body: editorField('Document (EJSON / shell syntax)', template, 18),
+    body: editorField('Document (JSON / Extended JSON)', template, 18),
     primaryLabel: 'Insert',
     onPrimary: async (getValue) => {
       const text = getValue();
       try {
-        const result = (await request('insert', { documentText: text })) as { insertedId: string };
-        void vscode;
+        const result = (await request('insert', { documentText: text })) as {
+          insertedId: string;
+          replacedDuplicateId: boolean;
+        };
         closeModal();
-        setStatusMessage(`Inserted _id: ${result.insertedId}`);
+        setStatusMessage(
+          result.replacedDuplicateId
+            ? `Inserted with new _id: ${result.insertedId} (the copied _id already existed).`
+            : `Inserted _id: ${result.insertedId}`
+        );
         await runFind();
       } catch (err) {
         showFieldError((err as Error).message);
@@ -1769,39 +1797,13 @@ async function cloneDocument(doc: Record<string, unknown>): Promise<void> {
   }
 }
 
-function showBulkInsertModal(): void {
-  const documentsInput = bulkEditorField(
-    'Documents (EJSON / shell syntax)',
-    '[\n  {\n    \n  },\n  {\n    \n  }\n]',
-    18
-  );
-  const body = el('div', { className: 'mc-bulk-form' });
-  body.append(documentsInput.wrap);
-  openModal({
-    title: `Bulk insert into ${state.namespace}`,
-    body,
-    primaryLabel: 'Insert documents',
-    onPrimary: async () => {
-      try {
-        const result = (await request('bulkInsert', {
-          documentsText: documentsInput.textarea.value
-        })) as { inserted: number };
-        closeModal();
-        setStatusMessage(`Inserted ${result.inserted} document(s).`);
-        await runFind();
-      } catch (err) {
-        showFieldError((err as Error).message);
-      }
-    }
-  });
-}
-
 function showBulkUpdateModal(): void {
   const filterText = state.query.filterText.trim() || '{}';
   const body = el('div', { className: 'mc-bulk-form' });
   const filterInput = bulkEditorField('Filter', filterText, 6);
   const updateInput = bulkEditorField('Update', '{\n  "$set": {\n    \n  }\n}', 12);
   const matchCount = el('div', { className: 'mc-muted', text: 'Counting matching documents…' });
+  const refreshMatchCount = bindBulkCount(filterInput.textarea, matchCount);
   body.append(filterInput.wrap, updateInput.wrap, matchCount);
   openModal({
     title: 'Bulk update documents',
@@ -1820,7 +1822,7 @@ function showBulkUpdateModal(): void {
         showFieldError((err as Error).message);
       }
     },
-    onOpen: () => void updateBulkCount(filterInput.textarea.value, matchCount)
+    onOpen: refreshMatchCount
   });
 }
 
@@ -1833,6 +1835,7 @@ function showBulkDeleteModal(): void {
     text: 'This permanently deletes every document matching the filter.'
   });
   const matchCount = el('div', { className: 'mc-muted', text: 'Counting matching documents…' });
+  const refreshMatchCount = bindBulkCount(filterInput.textarea, matchCount);
   body.append(filterInput.wrap, warning, matchCount);
   openModal({
     title: 'Bulk delete documents',
@@ -1850,7 +1853,7 @@ function showBulkDeleteModal(): void {
         showFieldError((err as Error).message);
       }
     },
-    onOpen: () => void updateBulkCount(filterInput.textarea.value, matchCount)
+    onOpen: refreshMatchCount
   });
 }
 
@@ -1865,11 +1868,30 @@ function bulkEditorField(label: string, value: string, rows: number): {
   return { wrap, textarea };
 }
 
-async function updateBulkCount(filterText: string, target: HTMLElement): Promise<void> {
+function bindBulkCount(textarea: HTMLTextAreaElement, target: HTMLElement): () => void {
+  let requestVersion = 0;
+  const refresh = (): void => {
+    const version = ++requestVersion;
+    target.classList.remove('error');
+    target.textContent = 'Counting matching documents…';
+    void updateBulkCount(textarea.value, target, () => version === requestVersion);
+  };
+  textarea.addEventListener('input', debounce(refresh, 300));
+  return refresh;
+}
+
+async function updateBulkCount(
+  filterText: string,
+  target: HTMLElement,
+  isCurrent: () => boolean
+): Promise<void> {
   try {
     const result = (await request('bulkCount', { filterText })) as { count: number };
+    if (!isCurrent()) return;
+    target.classList.remove('error');
     target.textContent = `${formatNumber(result.count)} document(s) match this filter.`;
   } catch (err) {
+    if (!isCurrent()) return;
     target.textContent = (err as Error).message;
     target.classList.add('error');
   }
@@ -1985,7 +2007,7 @@ let currentGetValue: () => string = () => '';
 let errorEl: HTMLElement | undefined;
 
 function openModal(options: ModalOptions): void {
-  closeModal();
+  closeModal(false);
   const backdrop = el('div', { className: 'mc-modal-backdrop' });
   const modal = el('div', { className: 'mc-modal' });
   modal.append(el('h3', { text: options.title }));
@@ -1999,7 +2021,7 @@ function openModal(options: ModalOptions): void {
   const actions = el('div', { className: 'mc-modal-actions' });
   if (!options.hideSecondary) {
     const cancel = el('button', { className: 'mc-btn', text: 'Cancel' });
-    cancel.addEventListener('click', closeModal);
+    cancel.addEventListener('click', () => closeModal());
     actions.append(cancel);
   }
   const primary = el('button', { className: 'mc-btn primary', text: options.primaryLabel });
@@ -2017,10 +2039,12 @@ function openModal(options: ModalOptions): void {
   options.onOpen?.();
 }
 
-function closeModal(): void {
+function closeModal(resetValue = true): void {
   clear(modalRoot);
   errorEl = undefined;
-  currentGetValue = () => '';
+  if (resetValue) {
+    currentGetValue = () => '';
+  }
 }
 
 function showFieldError(message: string): void {

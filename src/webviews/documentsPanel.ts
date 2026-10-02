@@ -158,11 +158,28 @@ export class DocumentsPanel extends BaseWebviewPanel {
 
     this.registerHandler('insert', async (msg, respond) => {
       const payload = msg.payload as { documentText: string };
-      const doc = parseShellBSON(payload.documentText);
+      const doc = parseInsertDocument(payload.documentText);
       const service = await this.service();
-      const insertedId = await service.insertOne(this.state.namespace, doc);
-      respond({ insertedId });
-      this.post('refresh');
+      let replacedDuplicateId = false;
+      if (doc._id !== undefined) {
+        const existing = await service.findOne(this.state.namespace, { _id: doc._id });
+        if (existing) {
+          delete doc._id;
+          replacedDuplicateId = true;
+        }
+      }
+      try {
+        const insertedId = await service.insertOne(this.state.namespace, doc);
+        respond({ insertedId, replacedDuplicateId });
+      } catch (error) {
+        throw new Error(mongoErrorMessage(error), { cause: error });
+      }
+    });
+
+    this.registerHandler('copyDocument', async (msg, respond) => {
+      const payload = msg.payload as { documentText: string };
+      await vscode.env.clipboard.writeText(payload.documentText);
+      respond({ ok: true });
     });
 
     this.registerHandler('bulkInsert', async (msg, respond) => {
@@ -465,7 +482,8 @@ export class DocumentsPanel extends BaseWebviewPanel {
   private async runFind(respond: (payload: unknown) => void): Promise<void> {
     const started = Date.now();
     this.abortController?.abort();
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.abortController = controller;
 
     try {
       logger.info('Documents query received', {
@@ -477,7 +495,7 @@ export class DocumentsPanel extends BaseWebviewPanel {
       const service = await this.service();
       const result = await service.find(this.state.namespace, this.state.query, {
         maxTimeMS: this.state.query.maxTimeMS,
-        signal: this.abortController.signal
+        signal: controller.signal
       });
 
       this.history.add({
@@ -508,7 +526,7 @@ export class DocumentsPanel extends BaseWebviewPanel {
       });
     } catch (err) {
       const error = err as Error;
-      if (error.name === 'MongoOperationTimeoutError' || this.abortController?.signal.aborted) {
+      if (error.name === 'MongoOperationTimeoutError' || controller.signal.aborted) {
         logger.warn('Query aborted', { ns: this.state.namespace.toString() });
         respond({ documents: [], count: null, totalCount: null, elapsedMS: 0, aborted: true });
         return;
@@ -551,9 +569,63 @@ function normalizeQuery(query: QueryState): QueryState {
   };
 }
 
+function parseInsertDocument(text: string): Document {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw new Error('Document JSON is required.');
+  }
+
+  let json: unknown;
+  try {
+    json = JSON.parse(trimmed);
+  } catch (err) {
+    throw new Error(`Invalid JSON: ${(err as Error).message}`);
+  }
+
+  if (json === null || typeof json !== 'object' || Array.isArray(json)) {
+    throw new Error('Document JSON must contain one object.');
+  }
+
+  normalizeObjectIds(json);
+  try {
+    return EJSON.deserialize(json as Document, { relaxed: false });
+  } catch (err) {
+    throw new Error(`Invalid Extended JSON: ${(err as Error).message}`);
+  }
+}
+
+function normalizeObjectIds(value: unknown): void {
+  if (Array.isArray(value)) {
+    value.forEach(normalizeObjectIds);
+    return;
+  }
+  if (value === null || typeof value !== 'object') return;
+
+  const object = value as Record<string, unknown>;
+  if (typeof object.$oid === 'string') {
+    object.$oid = object.$oid.trim();
+  }
+  Object.values(object).forEach(normalizeObjectIds);
+}
+
+function mongoErrorMessage(error: unknown): string {
+  const err = error as Error & {
+    code?: number;
+    codeName?: string;
+    errorResponse?: { errmsg?: string; code?: number; codeName?: string };
+    cause?: { message?: string };
+  };
+  const response = err.errorResponse;
+  const message = response?.errmsg ?? err.cause?.message ?? err.message ?? String(error);
+  const code = response?.code ?? err.code;
+  const codeName = response?.codeName ?? err.codeName;
+  const details = [code !== undefined ? `code ${code}` : '', codeName ?? ''].filter(Boolean).join(', ');
+  return details ? `${message} (${details})` : message;
+}
+
 function serialiseDocuments(documents: Document[]): string[] {
   return documents.map((doc) =>
-    EJSON.stringify(doc, undefined, 2, { relaxed: true })
+    EJSON.stringify(doc, undefined, 2, { relaxed: false })
   );
 }
 
