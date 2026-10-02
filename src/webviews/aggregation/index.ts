@@ -191,10 +191,19 @@ function renderResultList(documents: Record<string, unknown>[]): HTMLElement {
     const card = el('article', { className: 'mc-doc mc-aggregation-document' });
     const tree = createFieldTree(document);
     tree.classList.add('mc-doc-body');
+    const copyButton = el('button', {
+      className: 'mc-btn icon-only',
+      text: '📋',
+      title: 'Copy document JSON',
+      ariaLabel: 'Copy document JSON'
+    });
+    copyButton.addEventListener('click', () => void copyResult(index));
     card.append(
       el('div', { className: 'mc-doc-header' },
         el('span', { className: 'mc-chip', text: `#${index + 1}` }),
-        el('span', { className: 'doc-id', text: formatJsonCell(document._id) })
+        el('span', { className: 'doc-id', text: formatJsonCell(document._id) }),
+        el('span', { className: 'spacer' }),
+        copyButton
       ),
       tree
     );
@@ -208,6 +217,7 @@ function renderResultTable(documents: Record<string, unknown>[]): HTMLElement {
   const table = el('table', { className: 'mc-table mc-aggregation-grid' });
   const header = el('tr', {}, el('th', { text: '#' }));
   for (const column of columns) header.append(el('th', { text: column }));
+  header.append(el('th', { className: 'mc-actions-header', text: '' }));
   table.append(el('thead', {}, header));
   const body = el('tbody');
   documents.forEach((document, index) => {
@@ -218,10 +228,31 @@ function renderResultTable(documents: Record<string, unknown>[]): HTMLElement {
         title: formatJsonCell(document[column])
       }));
     }
+    const actions = el('td', { className: 'mc-actions-cell' });
+    const copyButton = el('button', {
+      className: 'mc-btn icon-only',
+      text: '📋',
+      title: 'Copy document JSON',
+      ariaLabel: 'Copy document JSON'
+    });
+    copyButton.addEventListener('click', () => void copyResult(index));
+    actions.append(copyButton);
+    row.append(actions);
     body.append(row);
   });
   table.append(body);
   return el('div', { className: 'mc-table-scroll' }, table);
+}
+
+/** Copy a result document's canonical Extended JSON to the clipboard. */
+async function copyResult(index: number): Promise<void> {
+  try {
+    await request('copyDocument', { documentText: state.results[index] });
+    state.warning = `Document ${index + 1} copied to clipboard.`;
+  } catch (error) {
+    state.error = (error as Error).message;
+  }
+  render();
 }
 
 function renderResultJson(documents: Record<string, unknown>[]): HTMLElement {
@@ -230,20 +261,12 @@ function renderResultJson(documents: Record<string, unknown>[]): HTMLElement {
     const block = el('article', { className: 'mc-json-document mc-pipeline-result' });
     const header = el('div', { className: 'mc-json-document-number', text: `Document ${index + 1}` });
     const copyButton = el('button', {
-      className: 'mc-btn icon-only mc-json-copy',
-      text: '⧉',
+      className: 'mc-btn icon-only',
+      text: '📋',
       title: 'Copy document JSON',
       ariaLabel: 'Copy document JSON'
     });
-    copyButton.addEventListener('click', async () => {
-      try {
-        await request('copyDocument', { documentText: state.results[index] });
-        state.warning = `Document ${index + 1} copied to clipboard.`;
-      } catch (error) {
-        state.error = (error as Error).message;
-      }
-      render();
-    });
+    copyButton.addEventListener('click', () => void copyResult(index));
     header.append(copyButton);
     block.append(header, createJsonTree(document));
     container.append(block);

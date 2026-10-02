@@ -2,6 +2,12 @@
 
 All notable changes to this extension are documented in this file.
 
+## 0.6.0 - 2026-10-02
+
+### Added
+
+- Copy-document buttons in the Aggregation pipeline's List and Table result views (matching the existing JSON view).
+
 ## 0.5.0 - 2026-10-02
 
 ### Added

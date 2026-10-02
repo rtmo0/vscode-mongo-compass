@@ -482,6 +482,15 @@ body {
   background: var(--vscode-list-hoverBackground);
 }
 
+.mc-table .mc-actions-header {
+  width: 1%;
+}
+
+.mc-table .mc-actions-cell {
+  width: 1%;
+  white-space: nowrap;
+}
+
 /* ── indexes ── */
 
 .mc-indexes-view {
@@ -716,6 +725,10 @@ body {
 }
 
 .mc-json-copy {
+  margin-left: auto;
+}
+
+.mc-json-document-number button:first-of-type {
   margin-left: auto;
 }
 

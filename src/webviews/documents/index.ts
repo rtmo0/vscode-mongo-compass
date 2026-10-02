@@ -1425,12 +1425,12 @@ function renderList(): HTMLElement {
 
     const editBtn = el('button', { className: 'mc-btn icon-only', text: '✎', title: 'Edit document' });
     editBtn.addEventListener('click', () => showEditModal(doc));
-    const cloneBtn = el('button', { className: 'mc-btn icon-only', text: '⧉', title: 'Clone document' });
-    cloneBtn.addEventListener('click', () => void cloneDocument(doc));
+    const copyBtn = el('button', { className: 'mc-btn icon-only', text: '📋', title: 'Copy document JSON' });
+    copyBtn.addEventListener('click', () => void copyDocumentText(index));
     const deleteBtn = el('button', { className: 'mc-btn icon-only', text: '🗑', title: 'Delete document' });
     deleteBtn.addEventListener('click', () => void deleteDocument(doc));
 
-    header.append(editBtn, cloneBtn, deleteBtn);
+    header.append(editBtn, copyBtn, deleteBtn);
 
     const body = el('div', { className: 'mc-doc-body mc-tree' });
     for (const [key, value] of Object.entries(doc)) {
@@ -1510,11 +1510,13 @@ function renderTable(): HTMLElement {
       row.append(cell);
     }
     const actions = el('td');
-    const editBtn = el('button', { className: 'mc-btn icon-only', text: '✎' });
+    const editBtn = el('button', { className: 'mc-btn icon-only', text: '✎', title: 'Edit document' });
     editBtn.addEventListener('click', () => showEditModal(doc));
-    const deleteBtn = el('button', { className: 'mc-btn icon-only', text: '🗑' });
+    const copyBtn = el('button', { className: 'mc-btn icon-only', text: '📋', title: 'Copy document JSON' });
+    copyBtn.addEventListener('click', () => void copyDocumentText(index));
+    const deleteBtn = el('button', { className: 'mc-btn icon-only', text: '🗑', title: 'Delete document' });
     deleteBtn.addEventListener('click', () => void deleteDocument(doc));
-    actions.append(editBtn, deleteBtn);
+    actions.append(editBtn, copyBtn, deleteBtn);
     row.append(actions);
     tbody.append(row);
   });
@@ -1531,21 +1533,18 @@ function renderJson(): HTMLElement {
       className: 'mc-json-document-number',
       text: `Document ${state.query.skip + index + 1}`
     });
+    const editBtn = el('button', { className: 'mc-btn icon-only', text: '✎', title: 'Edit document' });
+    editBtn.addEventListener('click', () => showEditModal(document));
     const copyButton = el('button', {
-      className: 'mc-btn icon-only mc-json-copy',
-      text: '⧉',
+      className: 'mc-btn icon-only',
+      text: '📋',
       title: 'Copy document JSON',
       ariaLabel: 'Copy document JSON'
     });
-    copyButton.addEventListener('click', async () => {
-      try {
-        await request('copyDocument', { documentText: state.documents[index] });
-        setStatusMessage(`Document ${state.query.skip + index + 1} copied to clipboard.`);
-      } catch (err) {
-        setStatusMessage((err as Error).message, true);
-      }
-    });
-    header.append(copyButton);
+    copyButton.addEventListener('click', () => void copyDocumentText(index));
+    const deleteBtn = el('button', { className: 'mc-btn icon-only', text: '🗑', title: 'Delete document' });
+    deleteBtn.addEventListener('click', () => void deleteDocument(document));
+    header.append(editBtn, copyButton, deleteBtn);
     block.append(header, createJsonTree(document));
     container.append(block);
   });
@@ -1773,7 +1772,7 @@ function showEditModal(doc: Record<string, unknown>): void {
 
 async function deleteDocument(doc: Record<string, unknown>): Promise<void> {
   const filterText = JSON.stringify({ _id: doc._id });
-  const confirmed = window.confirm(`Delete document ${formatId(doc._id)}? This cannot be undone.`);
+  const confirmed = await confirmDelete(formatId(doc._id));
   if (!confirmed) {
     return;
   }
@@ -1786,12 +1785,35 @@ async function deleteDocument(doc: Record<string, unknown>): Promise<void> {
   }
 }
 
-async function cloneDocument(doc: Record<string, unknown>): Promise<void> {
-  const filterText = JSON.stringify({ _id: doc._id });
+/** Show a modal-based confirmation (webviews do not implement `window.confirm`). */
+function confirmDelete(label: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value: boolean): void => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+    openModal({
+      title: 'Delete document',
+      body: el('div', { className: 'mc-error-text', text: `Delete ${label}? This cannot be undone.` }),
+      primaryLabel: 'Delete',
+      onPrimary: () => {
+        closeModal();
+        done(true);
+      },
+      onCancel: () => done(false)
+    });
+  });
+}
+
+/** Copy a document's canonical Extended JSON to the clipboard. */
+async function copyDocumentText(index: number): Promise<void> {
+  const label = `Document ${state.query.skip + index + 1}`;
   try {
-    const result = (await request('clone', { filterText })) as { insertedId: string };
-    setStatusMessage(`Cloned document, new _id: ${result.insertedId}`);
-    await runFind();
+    await request('copyDocument', { documentText: state.documents[index] });
+    setStatusMessage(`${label} copied to clipboard.`);
   } catch (err) {
     setStatusMessage((err as Error).message, true);
   }
@@ -2001,6 +2023,8 @@ interface ModalOptions {
   onPrimary: (getValue: () => string) => void | Promise<void>;
   hideSecondary?: boolean;
   onOpen?: () => void;
+  /** Called when the modal is dismissed without the primary action. */
+  onCancel?: () => void;
 }
 
 let currentGetValue: () => string = () => '';
@@ -2021,7 +2045,10 @@ function openModal(options: ModalOptions): void {
   const actions = el('div', { className: 'mc-modal-actions' });
   if (!options.hideSecondary) {
     const cancel = el('button', { className: 'mc-btn', text: 'Cancel' });
-    cancel.addEventListener('click', () => closeModal());
+    cancel.addEventListener('click', () => {
+      closeModal();
+      options.onCancel?.();
+    });
     actions.append(cancel);
   }
   const primary = el('button', { className: 'mc-btn primary', text: options.primaryLabel });
@@ -2033,6 +2060,7 @@ function openModal(options: ModalOptions): void {
   backdrop.addEventListener('click', (e) => {
     if (e.target === backdrop) {
       closeModal();
+      options.onCancel?.();
     }
   });
   modalRoot.append(backdrop);
