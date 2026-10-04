@@ -167,11 +167,53 @@ export function createFieldTree(value: Record<string, unknown>): HTMLElement {
   return tree;
 }
 
+export interface DocumentViewOptions {
+  startIndex?: number;
+  actions?: (document: Record<string, unknown>, index: number) => HTMLElement[];
+}
+
+/** Render documents with the shared collapsible tree presentation. */
+export function createDocumentList(
+  documents: Record<string, unknown>[],
+  options: DocumentViewOptions = {}
+): HTMLElement {
+  const container = el('div', { className: 'mc-document-list' });
+  documents.forEach((document, index) => {
+    const tree = createFieldTree(document);
+    tree.classList.add('mc-doc-body');
+    const header = el('div', { className: 'mc-doc-header' },
+      el('span', { className: 'mc-chip', text: `#${(options.startIndex ?? 0) + index + 1}` }),
+      el('span', { className: 'doc-id', text: formatDocumentId(document._id) }),
+      el('span', { className: 'spacer' })
+    );
+    header.append(...(options.actions?.(document, index) ?? []));
+    container.append(el('article', { className: 'mc-doc' }, header, tree));
+  });
+  return container;
+}
+
+/** Render documents with the shared expandable Extended JSON presentation. */
+export function createDocumentJsonList(
+  documents: Record<string, unknown>[],
+  options: DocumentViewOptions = {}
+): HTMLElement {
+  const container = el('div', { className: 'mc-json-list' });
+  documents.forEach((document, index) => {
+    const header = el('div', {
+      className: 'mc-json-document-number',
+      text: `Document ${(options.startIndex ?? 0) + index + 1}`
+    });
+    header.append(...(options.actions?.(document, index) ?? []));
+    container.append(el('article', { className: 'mc-json-document' }, header, createJsonTree(document)));
+  });
+  return container;
+}
+
 /** Format a value for a compact table cell while preserving EJSON scalar types. */
 export function formatJsonCell(value: unknown, compact = false): string {
   if (value === undefined) return '—';
   if (value === null || typeof value !== 'object') return formatJsonTreeValue(value);
-  const scalar = formatEjsonDate(value);
+  const scalar = formatEjsonScalar(value);
   if (scalar !== undefined) return scalar;
   return compact ? jsonValueSummary(value as Record<string, unknown> | unknown[]) : JSON.stringify(value);
 }
@@ -288,17 +330,26 @@ function renderJsonProperty(key: string, value: unknown, depth: number, parentIs
 }
 
 function isJsonContainer(value: unknown, canonical = false): value is Record<string, unknown> | unknown[] {
-  return value !== null && typeof value === 'object' && (canonical || formatEjsonDate(value) === undefined);
+  return value !== null && typeof value === 'object' && (canonical || formatEjsonScalar(value) === undefined);
 }
 
 function jsonValueSummary(value: Record<string, unknown> | unknown[]): string {
   return Array.isArray(value) ? `Array (${value.length})` : `Object (${Object.keys(value).length})`;
 }
 
+function formatDocumentId(value: unknown): string {
+  if (value === undefined) return '(no _id)';
+  if (value !== null && typeof value === 'object') {
+    const oid = (value as Record<string, unknown>).$oid;
+    return typeof oid === 'string' ? `ObjectId(${oid})` : JSON.stringify(value);
+  }
+  return String(value);
+}
+
 function formatJsonTreeValue(value: unknown): string {
   if (value === null) return 'null';
   if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'object') return formatEjsonDate(value) ?? String(value);
+  if (typeof value === 'object') return formatEjsonScalar(value) ?? String(value);
   return String(value);
 }
 
@@ -307,8 +358,46 @@ function jsonValueClass(value: unknown): string {
   if (typeof value === 'string') return 'tok-string';
   if (typeof value === 'number' || typeof value === 'bigint') return 'tok-number';
   if (typeof value === 'boolean') return 'tok-boolean';
-  if (typeof value === 'object') return 'tok-bson';
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    if ('$numberLong' in obj || '$numberInt' in obj || '$numberDouble' in obj || '$numberDecimal' in obj) {
+      return 'tok-number';
+    }
+    return 'tok-bson';
+  }
   return '';
+}
+
+function formatEjsonScalar(value: object): string | undefined {
+  if (Array.isArray(value)) return undefined;
+  const obj = value as Record<string, unknown>;
+  const date = formatEjsonDate(value);
+  if (date !== undefined) return date;
+  if (typeof obj.$oid === 'string') return `ObjectId('${obj.$oid}')`;
+  if (typeof obj.$numberLong === 'string') return `NumberLong('${obj.$numberLong}')`;
+  if (typeof obj.$numberInt === 'string') return `NumberInt('${obj.$numberInt}')`;
+  if (typeof obj.$numberDouble === 'string') return `NumberDouble('${obj.$numberDouble}')`;
+  if (typeof obj.$numberDecimal === 'string') return `Decimal128('${obj.$numberDecimal}')`;
+  if (obj.$timestamp !== null && typeof obj.$timestamp === 'object') {
+    const timestamp = obj.$timestamp as Record<string, unknown>;
+    return `Timestamp(${String(timestamp.t ?? '?')}, ${String(timestamp.i ?? '?')})`;
+  }
+  if (obj.$binary !== null && typeof obj.$binary === 'object') {
+    const binary = obj.$binary as Record<string, unknown>;
+    if (typeof binary.base64 === 'string') {
+      const subtype = typeof binary.subType === 'string' ? Number.parseInt(binary.subType, 16) : 0;
+      const preview = binary.base64.length > 96 ? `${binary.base64.slice(0, 96)}…` : binary.base64;
+      return `Binary.createFromBase64('${preview}', ${Number.isNaN(subtype) ? 0 : subtype})`;
+    }
+  }
+  if (obj.$regularExpression !== null && typeof obj.$regularExpression === 'object') {
+    const regex = obj.$regularExpression as Record<string, unknown>;
+    return `/${String(regex.pattern ?? '')}/${String(regex.options ?? '')}`;
+  }
+  if (typeof obj.$minKey === 'number') return 'MinKey()';
+  if (typeof obj.$maxKey === 'number') return 'MaxKey()';
+  if (obj.$undefined === true) return 'undefined';
+  return undefined;
 }
 
 function formatEjsonDate(value: object): string | undefined {

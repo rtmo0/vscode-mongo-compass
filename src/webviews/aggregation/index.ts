@@ -1,4 +1,4 @@
-import { request, on, getState, setState, el, clear, createFieldTree, createJsonTree, formatJsonCell, createSyntaxEditor, createExplainView, debounce } from '../shared/client';
+import { request, on, getState, setState, el, clear, createDocumentList, createDocumentJsonList, formatJsonCell, createSyntaxEditor, createExplainView, debounce } from '../shared/client';
 
 interface UiState {
   namespace: string;
@@ -186,30 +186,18 @@ function renderResultViewButtons(): void {
 }
 
 function renderResultList(documents: Record<string, unknown>[]): HTMLElement {
-  const container = el('div', { className: 'mc-document-list' });
-  documents.forEach((document, index) => {
-    const card = el('article', { className: 'mc-doc mc-aggregation-document' });
-    const tree = createFieldTree(document);
-    tree.classList.add('mc-doc-body');
-    const copyButton = el('button', {
-      className: 'mc-btn icon-only',
-      text: '📋',
-      title: 'Copy document JSON',
-      ariaLabel: 'Copy document JSON'
-    });
-    copyButton.addEventListener('click', () => void copyResult(index));
-    card.append(
-      el('div', { className: 'mc-doc-header' },
-        el('span', { className: 'mc-chip', text: `#${index + 1}` }),
-        el('span', { className: 'doc-id', text: formatJsonCell(document._id) }),
-        el('span', { className: 'spacer' }),
-        copyButton
-      ),
-      tree
-    );
-    container.append(card);
+  return createDocumentList(documents, { actions: (_document, index) => [createCopyResultButton(index)] });
+}
+
+function createCopyResultButton(index: number): HTMLElement {
+  const copyButton = el('button', {
+    className: 'mc-btn icon-only',
+    text: '📋',
+    title: 'Copy document JSON',
+    ariaLabel: 'Copy document JSON'
   });
-  return container;
+  copyButton.addEventListener('click', () => void copyResult(index));
+  return copyButton;
 }
 
 function renderResultTable(documents: Record<string, unknown>[]): HTMLElement {
@@ -256,22 +244,7 @@ async function copyResult(index: number): Promise<void> {
 }
 
 function renderResultJson(documents: Record<string, unknown>[]): HTMLElement {
-  const container = el('div', { className: 'mc-json-list' });
-  documents.forEach((document, index) => {
-    const block = el('article', { className: 'mc-json-document mc-pipeline-result' });
-    const header = el('div', { className: 'mc-json-document-number', text: `Document ${index + 1}` });
-    const copyButton = el('button', {
-      className: 'mc-btn icon-only',
-      text: '📋',
-      title: 'Copy document JSON',
-      ariaLabel: 'Copy document JSON'
-    });
-    copyButton.addEventListener('click', () => void copyResult(index));
-    header.append(copyButton);
-    block.append(header, createJsonTree(document));
-    container.append(block);
-  });
-  return container;
+  return createDocumentJsonList(documents, { actions: (_document, index) => [createCopyResultButton(index)] });
 }
 
 function render(): void {
@@ -398,11 +371,6 @@ function showExportModal(): void {
   select.focus();
 }
 
-async function copyShell(): Promise<void> {
-  try { await request('copyShellSnippet', payload()); state.warning = 'mongosh pipeline copied.'; render(); }
-  catch (error) { state.error = (error as Error).message; render(); }
-}
-
 $('btn-run').addEventListener('click', () => void run());
 $('btn-cancel').addEventListener('click', () => void request('cancel'));
 $('btn-count').addEventListener('click', () => void count());
@@ -413,5 +381,4 @@ $('btn-result-list').addEventListener('click', () => setResultView('list'));
 $('btn-result-table').addEventListener('click', () => setResultView('table'));
 $('btn-result-json').addEventListener('click', () => setResultView('json'));
 $('btn-export').addEventListener('click', showExportModal);
-$('btn-shell').addEventListener('click', () => void copyShell());
 render();

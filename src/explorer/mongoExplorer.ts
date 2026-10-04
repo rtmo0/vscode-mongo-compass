@@ -18,7 +18,6 @@ export type NodeKind =
   | 'connection'
   | 'databases'
   | 'database'
-  | 'collections'
   | 'collection'
   | 'views'
   | 'indexes'
@@ -155,44 +154,20 @@ export class DatabaseNode extends BaseNode {
     return item;
   }
 
-  override getChildren(): BaseNode[] {
-    return [new CollectionsNode(this.connection, this.database.name)];
-  }
-}
-
-export class CollectionsNode extends BaseNode {
-  readonly kind = 'collections' as const;
-  constructor(
-    public readonly connection: LiveConnection,
-    public readonly databaseName: string
-  ) {
-    super();
-  }
-
-  override getTreeItem(): vscode.TreeItem {
-    const item = new vscode.TreeItem(
-      'Collections',
-      vscode.TreeItemCollapsibleState.Collapsed
-    );
-    item.iconPath = new vscode.ThemeIcon('files');
-    item.contextValue = 'collections';
-    return item;
-  }
-
   override async getChildren(): Promise<BaseNode[]> {
     try {
       const service = new DataService(this.connection.client, this.connection.options.id);
-      const collections = await service.listCollections(this.databaseName);
+      const collections = await service.listCollections(this.database.name);
       if (collections.length === 0) {
         return [new InfoNode('No collections', 'info')];
       }
       const regular = collections.filter((c) => c.type === 'collection' || c.type === 'timeseries');
       const views = collections.filter((c) => c.type === 'view');
       const nodes: BaseNode[] = regular.map(
-        (c) => new CollectionNode(this.connection, this.databaseName, c)
+        (c) => new CollectionNode(this.connection, this.database.name, c)
       );
       if (views.length > 0) {
-        nodes.push(new ViewsNode(this.connection, this.databaseName, views));
+        nodes.push(new ViewsNode(this.connection, this.database.name, views));
       }
       return nodes;
     } catch (err) {
@@ -443,15 +418,12 @@ export class MongoExplorerProvider
     if (element instanceof DatabaseNode) {
       return new DatabasesNode(element.connection);
     }
-    if (element instanceof CollectionsNode) {
+    if (element instanceof CollectionNode || element instanceof ViewsNode) {
       return new DatabaseNode(element.connection, {
         name: element.databaseName,
         sizeOnDisk: 0,
         empty: false
       });
-    }
-    if (element instanceof CollectionNode) {
-      return new CollectionsNode(element.connection, element.databaseName);
     }
     if (element instanceof IndexesNode || element instanceof SearchIndexesNode) {
       return new CollectionNode(element.connection, element.namespace.database, {

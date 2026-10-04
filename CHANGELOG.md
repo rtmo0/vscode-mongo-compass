@@ -2,6 +2,14 @@
 
 All notable changes to this extension are documented in this file.
 
+## 0.7.0 - 2026-10-04
+
+### Changed
+
+- Collections are displayed directly under their database in the Explorer without an intermediate Collections node.
+- Document and aggregation result views now share the same document-list rendering helpers.
+- Simplified database and aggregation actions by removing redundant command and shell buttons.
+
 ## 0.6.0 - 2026-10-02
 
 ### Added

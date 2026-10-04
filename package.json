@@ -2,7 +2,7 @@
   "name": "mongo-compass",
   "displayName": "MongoDB Explorer & Compass Tools",
   "description": "Explore MongoDB, edit documents, build aggregation pipelines, manage indexes, analyze schemas and inspect performance without leaving VS Code.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "samarin-aa-aka-rtm00",
   "icon": "resources/mongodb.png",
   "license": "SEE LICENSE IN LICENSE",
@@ -467,18 +467,13 @@
           "group": "3_stats@1"
         },
         {
-          "command": "mongoCompass.runCommand",
-          "when": "view == mongoCompass.explorer && viewItem == database",
-          "group": "3_stats@2"
-        },
-        {
           "command": "mongoCompass.openMongosh",
           "when": "view == mongoCompass.explorer && viewItem == database",
           "group": "inline@1"
         },
         {
           "command": "mongoCompass.createCollection",
-          "when": "view == mongoCompass.explorer && (viewItem == database || viewItem == collections)",
+          "when": "view == mongoCompass.explorer && viewItem == database",
           "group": "2_create@1"
         },
         {

@@ -20,7 +20,6 @@ import {
   ConnectionNode,
   DatabasesNode,
   DatabaseNode,
-  CollectionsNode,
   CollectionNode,
   IndexesNode,
   IndexNode,
@@ -192,7 +191,7 @@ function nodeConnectionId(node: unknown): string | undefined {
   if (node instanceof ConnectionNode) {
     return node.connection.options.id;
   }
-  if (node instanceof DatabaseNode || node instanceof CollectionsNode) {
+  if (node instanceof DatabaseNode) {
     return node.connection.options.id;
   }
   if (node instanceof CollectionNode || node instanceof IndexesNode || node instanceof IndexNode) {
@@ -476,14 +475,11 @@ function registerCollectionCommands(context: vscode.ExtensionContext, s: Service
   const { connectionManager, explorer } = s;
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('mongoCompass.createCollection', async (arg?: DatabaseNode | CollectionsNode) => {
+    vscode.commands.registerCommand('mongoCompass.createCollection', async (arg?: DatabaseNode) => {
       const connection = arg?.connection ?? connectionManager.activeConnection;
-      const databaseName =
-        arg instanceof DatabaseNode
-          ? arg.database.name
-          : arg instanceof CollectionsNode
-            ? arg.databaseName
-            : await pickDatabase(connection);
+      const databaseName = arg instanceof DatabaseNode
+        ? arg.database.name
+        : await pickDatabase(connection);
       if (!connection || !databaseName) {
         return;
       }
@@ -515,14 +511,11 @@ function registerCollectionCommands(context: vscode.ExtensionContext, s: Service
       }
     }),
 
-    vscode.commands.registerCommand('mongoCompass.createView', async (arg?: DatabaseNode | CollectionsNode) => {
+    vscode.commands.registerCommand('mongoCompass.createView', async (arg?: DatabaseNode) => {
       const connection = arg?.connection ?? connectionManager.activeConnection;
-      const databaseName =
-        arg instanceof DatabaseNode
-          ? arg.database.name
-          : arg instanceof CollectionsNode
-            ? arg.databaseName
-            : await pickDatabase(connection);
+      const databaseName = arg instanceof DatabaseNode
+        ? arg.database.name
+        : await pickDatabase(connection);
       if (!connection || !databaseName) {
         return;
       }

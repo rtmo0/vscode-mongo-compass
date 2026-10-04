@@ -8,8 +8,10 @@ import {
   escapeHtml,
   createSyntaxEditor,
   createExplainView,
-  createJsonTree,
+  createDocumentList,
+  createDocumentJsonList,
   highlightJson,
+  formatJsonCell,
   formatNumber,
   debounce
 } from '../shared/client';
@@ -1410,74 +1412,20 @@ function parsedDocuments(): Array<Record<string, unknown>> {
 }
 
 function renderList(): HTMLElement {
-  const container = el('div', { className: 'mc-document-list' });
-  const docs = parsedDocuments();
-  docs.forEach((doc, index) => {
-    const idText = formatId(doc._id);
-    const card = el('div', { className: 'mc-doc' });
-
-    const header = el('div', { className: 'mc-doc-header' });
-    header.append(
-      el('span', { className: 'mc-chip', text: `#${state.query.skip + index + 1}` }),
-      el('span', { className: 'doc-id', text: idText }),
-      el('span', { className: 'spacer' })
-    );
-
-    const editBtn = el('button', { className: 'mc-btn icon-only', text: '✎', title: 'Edit document' });
-    editBtn.addEventListener('click', () => showEditModal(doc));
-    const copyBtn = el('button', { className: 'mc-btn icon-only', text: '📋', title: 'Copy document JSON' });
-    copyBtn.addEventListener('click', () => void copyDocumentText(index));
-    const deleteBtn = el('button', { className: 'mc-btn icon-only', text: '🗑', title: 'Delete document' });
-    deleteBtn.addEventListener('click', () => void deleteDocument(doc));
-
-    header.append(editBtn, copyBtn, deleteBtn);
-
-    const body = el('div', { className: 'mc-doc-body mc-tree' });
-    for (const [key, value] of Object.entries(doc)) {
-      body.append(renderTreeField(key, value, 0));
-    }
-
-    card.append(header, body);
-    container.append(card);
+  return createDocumentList(parsedDocuments(), {
+    startIndex: state.query.skip,
+    actions: (document, index) => createDocumentActions(document, index)
   });
-  return container;
 }
 
-function renderTreeField(key: string, value: unknown, depth: number): HTMLElement {
-  const branch = isExpandable(value);
-  const row = el('div', { className: 'mc-tree-row' });
-  row.style.setProperty('--tree-depth', String(depth));
-
-  const toggle = el('button', {
-    className: `mc-tree-toggle${branch ? '' : ' leaf'}`,
-    text: branch ? '▸' : '',
-    title: branch ? 'Expand field' : ''
-  });
-  const keyNode = el('span', { className: 'mc-tree-key', text: key });
-  const separator = el('span', { className: 'mc-tree-separator', text: ':' });
-  const valueNode = el('span', {
-    className: `mc-tree-value ${valueClass(value)}`,
-    text: branch ? valueSummary(value) : formatTreeValue(value)
-  });
-  row.append(toggle, keyNode, separator, valueNode);
-
-  const field = el('div', { className: 'mc-tree-field' }, row);
-  if (!branch) {
-    return field;
-  }
-
-  const children = el('div', { className: 'mc-tree-children' });
-  children.hidden = true;
-  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
-    children.append(renderTreeField(childKey, childValue, depth + 1));
-  }
-  toggle.addEventListener('click', () => {
-    children.hidden = !children.hidden;
-    toggle.textContent = children.hidden ? '▸' : '▾';
-    toggle.title = children.hidden ? 'Expand field' : 'Collapse field';
-  });
-  field.append(children);
-  return field;
+function createDocumentActions(document: Record<string, unknown>, index: number): HTMLElement[] {
+  const editButton = el('button', { className: 'mc-btn icon-only', text: '✎', title: 'Edit document' });
+  editButton.addEventListener('click', () => showEditModal(document));
+  const copyButton = el('button', { className: 'mc-btn icon-only', text: '📋', title: 'Copy document JSON' });
+  copyButton.addEventListener('click', () => void copyDocumentText(index));
+  const deleteButton = el('button', { className: 'mc-btn icon-only', text: '🗑', title: 'Delete document' });
+  deleteButton.addEventListener('click', () => void deleteDocument(document));
+  return [editButton, copyButton, deleteButton];
 }
 
 function renderTable(): HTMLElement {
@@ -1505,8 +1453,8 @@ function renderTable(): HTMLElement {
     const row = el('tr');
     row.append(el('td', { text: String(state.query.skip + index + 1) }));
     for (const col of cols) {
-      const cell = el('td', { title: formatCell(doc[col], false) });
-      cell.textContent = formatCell(doc[col], true);
+      const cell = el('td', { title: formatJsonCell(doc[col], false) });
+      cell.textContent = formatJsonCell(doc[col], true);
       row.append(cell);
     }
     const actions = el('td');
@@ -1526,29 +1474,10 @@ function renderTable(): HTMLElement {
 }
 
 function renderJson(): HTMLElement {
-  const container = el('div', { className: 'mc-json-list' });
-  parsedDocuments().forEach((document, index) => {
-    const block = el('section', { className: 'mc-json-document' });
-    const header = el('div', {
-      className: 'mc-json-document-number',
-      text: `Document ${state.query.skip + index + 1}`
-    });
-    const editBtn = el('button', { className: 'mc-btn icon-only', text: '✎', title: 'Edit document' });
-    editBtn.addEventListener('click', () => showEditModal(document));
-    const copyButton = el('button', {
-      className: 'mc-btn icon-only',
-      text: '📋',
-      title: 'Copy document JSON',
-      ariaLabel: 'Copy document JSON'
-    });
-    copyButton.addEventListener('click', () => void copyDocumentText(index));
-    const deleteBtn = el('button', { className: 'mc-btn icon-only', text: '🗑', title: 'Delete document' });
-    deleteBtn.addEventListener('click', () => void deleteDocument(document));
-    header.append(editBtn, copyButton, deleteBtn);
-    block.append(header, createJsonTree(document));
-    container.append(block);
+  return createDocumentJsonList(parsedDocuments(), {
+    startIndex: state.query.skip,
+    actions: (document, index) => createDocumentActions(document, index)
   });
-  return container;
 }
 
 function renderPagination(): void {
@@ -1590,125 +1519,6 @@ function formatId(id: unknown): string {
     return JSON.stringify(id);
   }
   return String(id);
-}
-
-function formatCell(value: unknown, compact = false): string {
-  if (value === null || value === undefined) {
-    return '—';
-  }
-  if (typeof value === 'object') {
-    const bsonValue = formatEjsonScalar(value);
-    if (bsonValue !== undefined) {
-      return bsonValue;
-    }
-    if (compact) {
-      return valueSummary(value);
-    }
-    return JSON.stringify(value);
-  }
-  return String(value);
-}
-
-function isExpandable(value: unknown): value is Record<string, unknown> | unknown[] {
-  return value !== null && typeof value === 'object' && !isEjsonScalar(value);
-}
-
-function isEjsonScalar(value: object): boolean {
-  return formatEjsonScalar(value) !== undefined;
-}
-
-function formatEjsonScalar(value: object): string | undefined {
-  const obj = value as Record<string, unknown>;
-  if (obj.$date !== undefined) {
-    const dateValue = obj.$date;
-    const raw = dateValue !== null && typeof dateValue === 'object'
-      ? (dateValue as Record<string, unknown>).$numberLong
-      : dateValue;
-    if (typeof raw === 'string' || typeof raw === 'number') {
-      const date = new Date(typeof raw === 'string' && /^-?\d+$/.test(raw) ? Number(raw) : raw);
-      if (!Number.isNaN(date.getTime())) {
-        return `ISODate('${date.toISOString().replace('Z', '+00:00')}')`;
-      }
-    }
-  }
-  if (typeof obj.$oid === 'string') {
-    return `ObjectId("${obj.$oid}")`;
-  }
-  if (typeof obj.$numberLong === 'string') {
-    return `NumberLong("${obj.$numberLong}")`;
-  }
-  if (typeof obj.$numberInt === 'string') {
-    return `NumberInt("${obj.$numberInt}")`;
-  }
-  if (typeof obj.$numberDouble === 'string') {
-    return `NumberDouble("${obj.$numberDouble}")`;
-  }
-  if (typeof obj.$numberDecimal === 'string') {
-    return `Decimal128("${obj.$numberDecimal}")`;
-  }
-  if (obj.$timestamp && typeof obj.$timestamp === 'object') {
-    const timestamp = obj.$timestamp as Record<string, unknown>;
-    return `Timestamp(${String(timestamp.t ?? '?')}, ${String(timestamp.i ?? '?')})`;
-  }
-  if (typeof obj.$minKey === 'number') {
-    return 'MinKey()';
-  }
-  if (typeof obj.$maxKey === 'number') {
-    return 'MaxKey()';
-  }
-  if (typeof obj.$undefined === 'boolean') {
-    return 'undefined';
-  }
-  if (typeof obj.$regularExpression === 'object' && obj.$regularExpression !== null) {
-    const regex = obj.$regularExpression as Record<string, unknown>;
-    return `/${String(regex.pattern ?? '')}/${String(regex.options ?? '')}`;
-  }
-  return undefined;
-}
-
-function valueSummary(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `Array (${value.length})`;
-  }
-  if (value !== null && typeof value === 'object') {
-    return `Object (${Object.keys(value).length})`;
-  }
-  return formatTreeValue(value);
-}
-
-function formatTreeValue(value: unknown): string {
-  if (value === null) {
-    return 'null';
-  }
-  if (typeof value === 'string') {
-    return `"${value}"`;
-  }
-  if (typeof value === 'object') {
-    return formatCell(value);
-  }
-  return String(value);
-}
-
-function valueClass(value: unknown): string {
-  if (value === null) {
-    return 'tok-null';
-  }
-  if (isExpandable(value)) {
-    return 'mc-tree-summary';
-  }
-  if (typeof value === 'string') {
-    return 'tok-string';
-  }
-  if (typeof value === 'number') {
-    return 'tok-number';
-  }
-  if (typeof value === 'boolean') {
-    return 'tok-boolean';
-  }
-  if (typeof value === 'object') {
-    return 'tok-bson';
-  }
-  return '';
 }
 
 function syncInputsFromState(): void {
