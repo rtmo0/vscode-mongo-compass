@@ -22,9 +22,15 @@
     <div class="mc-status" id="status"><span id="status-text">Ready</span></div>
     <main class="mc-pipeline-workspace">
       <section class="mc-pipeline-editor-pane">
-        <div class="mc-pane-title">Pipeline</div>
+        <div class="mc-pane-title">
+          <span>Pipeline</span>
+          <div class="mc-segment" role="tablist" aria-label="Pipeline editor mode">
+            <button class="mc-btn active" id="btn-mode-text" title="Edit the pipeline as text">Text</button>
+            <button class="mc-btn" id="btn-mode-builder" title="Build the pipeline stage by stage">Builder</button>
+          </div>
+        </div>
         <div id="pipeline-editor" class="mc-pipeline-editor"></div>
-        <div id="pipeline-suggestions" class="mc-pipeline-suggestions" hidden></div>
+        <div id="pipeline-builder" class="mc-pipeline-builder" hidden></div>
       </section>
       <div
         id="pipeline-resizer"

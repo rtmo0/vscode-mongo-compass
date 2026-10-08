@@ -118,39 +118,185 @@ export function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+const BSON_CONSTRUCTORS = new Set([
+  'ObjectId', 'ObjectID', 'ISODate', 'Date', 'NumberLong', 'NumberInt', 'NumberDecimal', 'Double', 'Int32',
+  'Long', 'Decimal128', 'Binary', 'UUID', 'Timestamp', 'DBRef', 'MinKey', 'MaxKey', 'Code', 'RegExp', 'BSONRegExp', 'new'
+]);
+
+/** After these characters a `/` starts a regex literal rather than a division. */
+const REGEX_PRECEDERS = new Set(['', '(', ',', ':', '[', '{', '=', '!', '&', '|', '?', ';']);
+
 /**
- * Lightweight EJSON syntax highlighter. Produces safe HTML (input escaped).
+ * Syntax highlighter for JSON, Extended JSON and mongosh-style query source.
+ * Each token is escaped on its own, so the output is safe HTML.
  */
-export function highlightJson(value: unknown, indent = 2): string {
-  const json = typeof value === 'string' ? value : JSON.stringify(value, null, indent);
-  if (json === undefined) {
-    return '';
-  }
-  const escaped = escapeHtml(json);
-  return escaped.replace(
-    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\$?[A-Za-z_][A-Za-z0-9_]*(?=\s*:)|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?|\b(?:ObjectId|ISODate|NumberLong|NumberInt|NumberDecimal|UUID|Timestamp|DBRef|Binary)\b)/g,
-    (match) => {
-      let cls = 'tok-number';
-      if (/^"/.test(match)) {
-        if (/^"\$/.test(match) && /:$/.test(match)) {
-          cls = 'tok-operator';
-        } else {
-          cls = /:$/.test(match) ? 'tok-key' : 'tok-string';
-        }
-      } else if (/^\$/.test(match)) {
-        cls = 'tok-operator';
-      } else if (/^[A-Za-z_]/.test(match) && /^(?:true|false|null)$/.test(match) === false) {
-        cls = 'tok-key';
-      } else if (/true|false/.test(match)) {
-        cls = 'tok-boolean';
-      } else if (/null/.test(match)) {
-        cls = 'tok-null';
-      } else if (/ObjectId|ISODate|NumberLong|NumberInt|NumberDecimal|UUID|Timestamp|DBRef|Binary/.test(match)) {
-        cls = 'tok-bson';
-      }
-      return `<span class="${cls}">${match}</span>`;
+export function highlightCode(text: string): string {
+  let out = '';
+  let i = 0;
+  /** Last significant character, or 'v' after a value-like token. */
+  let prev = '';
+  const push = (cls: string, value: string): void => {
+    out += cls ? `<span class="${cls}">${escapeHtml(value)}</span>` : escapeHtml(value);
+  };
+  const followedByColon = (from: number): boolean => /^\s*:(?!:)/.test(text.slice(from, from + 64));
+
+  while (i < text.length) {
+    const ch = text[i];
+    const rest = text.slice(i);
+
+    if (ch === '/' && text[i + 1] === '/') {
+      const end = text.indexOf('\n', i);
+      const stop = end < 0 ? text.length : end;
+      push('tok-comment', text.slice(i, stop));
+      i = stop;
+      continue;
     }
-  );
+    if (ch === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      const stop = end < 0 ? text.length : end + 2;
+      push('tok-comment', text.slice(i, stop));
+      i = stop;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== ch && text[j] !== '\n') {
+        j += text[j] === '\\' ? 2 : 1;
+      }
+      if (text[j] === ch) {
+        j += 1;
+      }
+      const token = text.slice(i, j);
+      const content = token.slice(1, token.length > 1 && token.endsWith(ch) ? -1 : undefined);
+      let cls = 'tok-string';
+      if (followedByColon(j)) {
+        cls = content.startsWith('$') ? 'tok-operator' : 'tok-key';
+      } else if (content.startsWith('$$')) {
+        cls = 'tok-variable';
+      } else if (/^\$[A-Za-z_]/.test(content)) {
+        cls = 'tok-fieldref';
+      }
+      push(cls, token);
+      prev = 'v';
+      i = j;
+      continue;
+    }
+    if (ch === '/' && REGEX_PRECEDERS.has(prev)) {
+      const match = /^\/(?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^/\\\n[])+\/[dgimsuy]*/.exec(rest);
+      if (match) {
+        push('tok-regex', match[0]);
+        prev = 'v';
+        i += match[0].length;
+        continue;
+      }
+    }
+    if (/[A-Za-z_$]/.test(ch)) {
+      const word = /^[A-Za-z_$][\w$]*/.exec(rest)![0];
+      let cls = '';
+      if (followedByColon(i + word.length)) {
+        cls = word.startsWith('$') ? 'tok-operator' : 'tok-key';
+      } else if (word === 'true' || word === 'false') {
+        cls = 'tok-boolean';
+      } else if (word === 'null' || word === 'undefined') {
+        cls = 'tok-null';
+      } else if (word === 'NaN' || word === 'Infinity') {
+        cls = 'tok-number';
+      } else if (BSON_CONSTRUCTORS.has(word)) {
+        cls = 'tok-bson';
+      } else if (word.startsWith('$$')) {
+        cls = 'tok-variable';
+      } else if (word.startsWith('$')) {
+        cls = 'tok-operator';
+      }
+      push(cls, word);
+      prev = word === 'new' ? '(' : 'v';
+      i += word.length;
+      continue;
+    }
+    const number = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/.exec(rest);
+    if (number && (/\d/.test(ch) || prev !== 'v')) {
+      push('tok-number', number[0]);
+      prev = 'v';
+      i += number[0].length;
+      continue;
+    }
+    if ('{}[]():,'.includes(ch)) {
+      push('tok-punct', ch);
+      prev = ch;
+      i += 1;
+      continue;
+    }
+    push('', ch);
+    if (!/\s/.test(ch)) {
+      prev = ch;
+    }
+    i += 1;
+  }
+  return out;
+}
+
+/** Highlight a value (serialised as indented JSON) or a source string. */
+export function highlightJson(value: unknown, indent = 2): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, indent);
+  return text === undefined ? '' : highlightCode(text);
+}
+
+/**
+ * Colour a single-line `<input>` by drawing highlighted text over it.
+ * The input keeps focus, caret, selection and events; only its own glyphs
+ * are made transparent. Programmatic `value` assignments refresh the layer.
+ */
+export function attachInputHighlight(input: HTMLInputElement): void {
+  const wrapper = el('span', { className: 'mc-hl-input' });
+  const layer = el('span', { className: 'mc-hl-input-layer' });
+  layer.setAttribute('aria-hidden', 'true');
+  wrapper.style.flex = getComputedStyle(input).flex;
+  input.replaceWith(wrapper);
+  wrapper.append(input, layer);
+  input.classList.add('mc-hl-input-field');
+
+  const syncMetrics = (): void => {
+    const style = getComputedStyle(input);
+    const props = [
+      'paddingLeft', 'paddingRight', 'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+      'fontFamily', 'fontSize', 'fontWeight', 'letterSpacing'
+    ] as const;
+    for (const prop of props) {
+      layer.style[prop] = style[prop];
+    }
+    layer.style.borderStyle = 'solid';
+    layer.style.borderColor = 'transparent';
+    layer.style.lineHeight = `${input.clientHeight}px`;
+  };
+  const update = (): void => {
+    layer.innerHTML = highlightCode(input.value);
+    layer.scrollLeft = input.scrollLeft;
+  };
+  const syncScroll = (): void => {
+    requestAnimationFrame(() => {
+      layer.scrollLeft = input.scrollLeft;
+    });
+  };
+
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!;
+  Object.defineProperty(input, 'value', {
+    configurable: true,
+    get(this: HTMLInputElement) {
+      return descriptor.get!.call(this);
+    },
+    set(this: HTMLInputElement, next: string) {
+      descriptor.set!.call(this, next);
+      update();
+    }
+  });
+
+  input.addEventListener('input', update);
+  for (const type of ['scroll', 'keydown', 'keyup', 'click', 'focus', 'blur', 'select', 'mousemove']) {
+    input.addEventListener(type, syncScroll);
+  }
+  new ResizeObserver(syncMetrics).observe(input);
+  syncMetrics();
+  update();
 }
 
 /** Render an expandable canonical Extended JSON tree shared by document and aggregation views. */
@@ -434,7 +580,7 @@ export function createSyntaxEditor(value: string, rows: number): {
   textarea.spellcheck = false;
 
   const update = (): void => {
-    highlight.innerHTML = `${highlightJson(textarea.value)}\n`;
+    highlight.innerHTML = `${highlightCode(textarea.value)}\n`;
   };
   textarea.addEventListener('input', update);
   textarea.addEventListener('scroll', () => {

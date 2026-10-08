@@ -1,4 +1,6 @@
 import { request, on, getState, setState, el, clear, createDocumentList, createDocumentJsonList, formatJsonCell, createSyntaxEditor, createExplainView, debounce } from '../shared/client';
+import { createPipelineBuilder } from './builder';
+import { attachQueryAutocomplete, pipelineStagePrefix, toFieldInfo, type FieldInfo, type FieldPathSample } from '../shared/queryAutocomplete';
 
 interface UiState {
   namespace: string;
@@ -9,19 +11,25 @@ interface UiState {
   loading: boolean;
   error: string | null;
   warning: string | null;
+  /** Informational status message (e.g. "Pipeline cancelled") shown instead of counts. */
+  notice?: string | null;
   panePercent: number;
   viewMode: 'list' | 'table' | 'json';
+  /** Pipeline pane mode: raw text or the visual stage builder. */
+  editorMode?: 'text' | 'builder';
 }
 
 let state = getState<UiState>({ namespace: '—', pipelineText: '[\n  \n]', results: [], count: null, elapsedMS: 0, loading: false, error: null, warning: null, panePercent: 50, viewMode: 'list' });
 state.viewMode ??= 'list';
+// A run in flight when the webview was reloaded will never answer.
+state.loading = false;
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const namespaceEl = $('namespace');
 const statusEl = $('status-text');
 const resultsEl = $('results');
 const resultsInfo = $('results-info');
 const editorHost = $('pipeline-editor');
-const suggestionsEl = $('pipeline-suggestions');
+const builderHost = $('pipeline-builder');
 const workspaceEl = $('pipeline-resizer').parentElement as HTMLElement;
 const resizerEl = $('pipeline-resizer');
 const modalRoot = $('modal-root');
@@ -62,73 +70,70 @@ const persist = debounce(() => {
   void request('syncPipeline', { pipelineText: state.pipelineText }).catch(() => undefined);
 }, 200);
 
-const PIPELINE_COMPLETIONS = [
-  { label: '$match', detail: 'Filter documents', insert: '{\n    $match: {\n      field: value\n    }\n  }' },
-  { label: '$project', detail: 'Select or compute fields', insert: '{\n    $project: {\n      field: 1\n    }\n  }' },
-  { label: '$group', detail: 'Group documents', insert: '{\n    $group: {\n      _id: "$field",\n      count: { $sum: 1 }\n    }\n  }' },
-  { label: '$sort', detail: 'Sort documents', insert: '{\n    $sort: {\n      field: 1\n    }\n  }' },
-  { label: '$limit', detail: 'Limit result count', insert: '{ $limit: 100 }' },
-  { label: '$skip', detail: 'Skip documents', insert: '{ $skip: 0 }' },
-  { label: '$unwind', detail: 'Expand an array', insert: '{ $unwind: "$field" }' },
-  { label: '$lookup', detail: 'Join another collection', insert: '{\n    $lookup: {\n      from: "collection",\n      localField: "field",\n      foreignField: "_id",\n      as: "joined"\n    }\n  }' },
-  { label: '$addFields', detail: 'Add computed fields', insert: '{\n    $addFields: {\n      field: expression\n    }\n  }' },
-  { label: '$set', detail: 'Set computed fields', insert: '{\n    $set: {\n      field: expression\n    }\n  }' },
-  { label: '$unset', detail: 'Remove fields', insert: '{ $unset: ["field"] }' },
-  { label: '$count', detail: 'Count results', insert: '{ $count: "count" }' },
-  { label: '$facet', detail: 'Run multiple sub-pipelines', insert: '{\n    $facet: {\n      results: [],\n      total: [{ $count: "count" }]\n    }\n  }' },
-  { label: '$replaceRoot', detail: 'Replace the root document', insert: '{ $replaceRoot: { newRoot: "$field" } }' },
-  { label: '$sample', detail: 'Select random documents', insert: '{ $sample: { size: 10 } }' },
-  { label: '$sum', detail: 'Accumulator', insert: '$sum: 1' },
-  { label: '$avg', detail: 'Average accumulator', insert: '$avg: "$field"' },
-  { label: '$first', detail: 'First value accumulator', insert: '$first: "$field"' },
-  { label: '$last', detail: 'Last value accumulator', insert: '$last: "$field"' },
-  { label: '$push', detail: 'Array accumulator', insert: '$push: "$field"' },
-  { label: '$in', detail: 'Value is in array', insert: '$in: ["$field", []]' },
-  { label: '$gte', detail: 'Greater than or equal', insert: '$gte: value' },
-  { label: '$lte', detail: 'Less than or equal', insert: '$lte: value' }
-];
-let visibleCompletions: typeof PIPELINE_COMPLETIONS = [];
-let selectedCompletion = 0;
+// Fields offered at a stage are those flowing *into* it, so they are
+// fetched per pipeline prefix (stages before the caret) and cached.
+const stageFieldCache = new Map<string, FieldInfo[]>();
+const stageFieldRequests = new Map<string, Promise<FieldInfo[]>>();
 
-function completionPrefix(): { start: number; text: string } | null {
-  const before = editor.textarea.value.slice(0, editor.textarea.selectionStart);
-  const match = /\$[A-Za-z]*$/.exec(before);
-  return match ? { start: before.length - match[0].length, text: match[0].toLowerCase() } : null;
+/** Fields flowing into a stage, given the text of the stages before it ('' → the collection's fields). */
+function fieldsForPrefix(prefixText: string): FieldInfo[] | Promise<FieldInfo[]> {
+  const normalized = prefixText.replace(/\s+/g, ' ').trim();
+  const cacheKey = normalized === '' || normalized === '[ ]' || normalized === '[]' ? '' : normalized;
+  const cached = stageFieldCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  let pending = stageFieldRequests.get(cacheKey);
+  if (!pending) {
+    const collectionFields = (): Promise<FieldInfo[]> => Promise.resolve(fieldsForPrefix(''));
+    pending = request<FieldPathSample>('stageFields', { pipelineText: cacheKey ? prefixText : '' })
+      .then(toFieldInfo)
+      // A stage prefix that fails or yields nothing falls back to the collection's fields.
+      .catch(() => (cacheKey ? collectionFields() : []))
+      .then((fields) => (fields.length || !cacheKey ? fields : collectionFields()))
+      .then((fields) => {
+        stageFieldCache.set(cacheKey, fields);
+        return fields;
+      })
+      .finally(() => stageFieldRequests.delete(cacheKey));
+    stageFieldRequests.set(cacheKey, pending);
+  }
+  return pending;
 }
 
-function hideSuggestions(): void { suggestionsEl.hidden = true; clear(suggestionsEl); }
-
-function applyCompletion(index: number): void {
-  const prefix = completionPrefix();
-  const completion = visibleCompletions[index];
-  if (!prefix || !completion) return;
-  const textarea = editor.textarea;
-  const end = textarea.selectionStart;
-  textarea.setRangeText(completion.insert, prefix.start, end, 'end');
-  textarea.dispatchEvent(new Event('input'));
-  textarea.focus();
-  hideSuggestions();
+function stageFieldsAtCaret(text: string, caret: number): FieldInfo[] | Promise<FieldInfo[]> {
+  const prefix = pipelineStagePrefix(text, caret);
+  return fieldsForPrefix(prefix && prefix.stageIndex > 0 ? prefix.prefixText : '');
 }
+attachQueryAutocomplete(editor.textarea, { kind: 'pipeline', fields: stageFieldsAtCaret });
 
-function showSuggestions(): void {
-  const prefix = completionPrefix();
-  if (!prefix) { hideSuggestions(); return; }
-  visibleCompletions = PIPELINE_COMPLETIONS.filter((item) => item.label.toLowerCase().startsWith(prefix.text)).slice(0, 10);
-  if (!visibleCompletions.length) { hideSuggestions(); return; }
-  selectedCompletion = 0;
-  clear(suggestionsEl);
-  visibleCompletions.forEach((item, index) => {
-    const option = el('button', { className: `mc-pipeline-suggestion${index === 0 ? ' active' : ''}` });
-    option.append(el('strong', { text: item.label }), el('span', { text: item.detail }));
-    option.addEventListener('mousedown', (event) => { event.preventDefault(); applyCompletion(index); });
-    suggestionsEl.append(option);
-  });
-  suggestionsEl.hidden = false;
-}
+// ── visual builder ──
+const builder = createPipelineBuilder({
+  getPipelineText: () => editor.textarea.value,
+  setPipelineText: (text) => {
+    editor.textarea.value = text;
+    editor.textarea.dispatchEvent(new Event('input'));
+  },
+  fieldsForPrefix,
+  run: () => void run()
+});
+builderHost.append(builder.element);
 
-function updateSuggestionSelection(): void {
-  Array.from(suggestionsEl.children).forEach((child, index) => child.classList.toggle('active', index === selectedCompletion));
+async function setEditorMode(mode: 'text' | 'builder'): Promise<void> {
+  if (mode === 'builder' && !(await builder.load())) {
+    // Leave the error visible in the builder pane but keep the text editable.
+    state.editorMode = 'builder';
+  } else {
+    state.editorMode = mode;
+  }
+  editorHost.hidden = state.editorMode !== 'text';
+  builderHost.hidden = state.editorMode !== 'builder';
+  $('btn-mode-text').classList.toggle('active', state.editorMode === 'text');
+  $('btn-mode-builder').classList.toggle('active', state.editorMode === 'builder');
+  setState(state);
 }
+$('btn-mode-text').addEventListener('click', () => void setEditorMode('text'));
+$('btn-mode-builder').addEventListener('click', () => void setEditorMode('builder'));
 
 function payload(extra: Record<string, unknown> = {}): Record<string, unknown> {
   state.pipelineText = editor.textarea.value;
@@ -140,26 +145,16 @@ function initialize(value: { namespace: string; pipelineText: string }): void {
   state.pipelineText = value.pipelineText || '[\n  \n]';  editor.textarea.value = state.pipelineText || '[\n  \n]';
   editor.textarea.dispatchEvent(new Event('input'));
   render();
+  void setEditorMode(state.editorMode ?? 'text');
 }
 
 on('init', (value) => initialize(value as { namespace: string; pipelineText: string }));
 void request('ready').then((value) => value && initialize(value as { namespace: string; pipelineText: string }));
 editor.textarea.addEventListener('input', () => {
   state.pipelineText = editor.textarea.value;
-  showSuggestions();
   persist();
 });
-editor.textarea.addEventListener('blur', () => setTimeout(hideSuggestions, 100));
 editor.textarea.addEventListener('keydown', (event) => {
-  if (!suggestionsEl.hidden && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
-    event.preventDefault();
-    if (event.key === 'ArrowDown') selectedCompletion = (selectedCompletion + 1) % visibleCompletions.length;
-    else if (event.key === 'ArrowUp') selectedCompletion = (selectedCompletion - 1 + visibleCompletions.length) % visibleCompletions.length;
-    else if (event.key === 'Escape') hideSuggestions();
-    else applyCompletion(selectedCompletion);
-    updateSuggestionSelection();
-    return;
-  }
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void run(); }
 });
 
@@ -249,11 +244,12 @@ function renderResultJson(documents: Record<string, unknown>[]): HTMLElement {
 
 function render(): void {
   namespaceEl.textContent = state.namespace;
+  ($('btn-cancel') as HTMLButtonElement).disabled = !state.loading;
   renderResultViewButtons();
   clear(statusEl);
   if (state.loading) statusEl.append(el('span', { className: 'mc-spinner' }), ' Running pipeline…');
   else if (state.error) statusEl.append(el('span', { className: 'error', text: state.error }));
-  else statusEl.textContent = state.warning ?? (state.elapsedMS ? `Showing ${state.results.length}${state.count === null ? '' : ` of ${state.count}`} · ${state.elapsedMS} ms` : 'Ready');
+  else statusEl.textContent = state.notice ?? state.warning ?? (state.elapsedMS ? `Showing ${state.results.length}${state.count === null ? '' : ` of ${state.count}`} · ${state.elapsedMS} ms` : 'Ready');
   resultsInfo.textContent = state.count === null
     ? `${state.results.length} shown`
     : `${state.results.length} of ${state.count} documents`;
@@ -274,13 +270,27 @@ function render(): void {
   persist();
 }
 
+/** Sequence number of the latest Run; responses to older runs are ignored. */
+let runSequence = 0;
+
 async function run(): Promise<void> {
-  state.loading = true; state.error = null; state.warning = null; render();
+  const sequence = ++runSequence;
+  state.loading = true; state.error = null; state.warning = null; state.notice = null; render();
   try {
-    const result = await request('runAll', payload()) as { documents?: string[]; count?: number | null; elapsedMS?: number; warning?: string; error?: string };
+    const result = await request('runAll', payload()) as { documents?: string[]; count?: number | null; elapsedMS?: number; warning?: string; error?: string; aborted?: boolean };
+    if (sequence !== runSequence) return;
+    if (result.aborted) {
+      // Keep the previously shown results; just report the cancellation.
+      state.notice = 'Pipeline cancelled.';
+      return;
+    }
     if (result.error) throw new Error(result.error);
     state.results = result.documents ?? []; state.count = result.count ?? null; state.elapsedMS = result.elapsedMS ?? 0; state.warning = result.warning ?? null;
-  } catch (error) { state.error = (error as Error).message; } finally { state.loading = false; render(); }
+  } catch (error) {
+    if (sequence === runSequence) state.error = (error as Error).message;
+  } finally {
+    if (sequence === runSequence) { state.loading = false; render(); }
+  }
 }
 
 async function count(): Promise<void> {

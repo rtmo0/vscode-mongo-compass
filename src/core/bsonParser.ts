@@ -16,33 +16,62 @@ import {
 } from 'bson';
 
 /**
+ * Make a BSON class usable the way mongosh allows: both `ObjectId("…")` and
+ * `new ObjectId("…")`. ES classes throw when called without `new`, so wrap
+ * them in a plain function that keeps statics (`Binary.createFromBase64`)
+ * and `instanceof` working.
+ */
+function callable<T extends abstract new (...args: never[]) => unknown>(Cls: T): T {
+  const Ctor = Cls as unknown as new (...args: unknown[]) => unknown;
+  function wrapper(...args: unknown[]): unknown {
+    return new Ctor(...args);
+  }
+  Object.setPrototypeOf(wrapper, Cls);
+  wrapper.prototype = Cls.prototype;
+  return wrapper as unknown as T;
+}
+
+/**
+ * Wrap a factory so `new Factory(…)` behaves like `Factory(…)`. A plain
+ * function returning an object yields that object when called with `new`.
+ */
+function factory<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  return function (...args: A): R {
+    return fn(...args);
+  };
+}
+
+/**
  * Compass' query bar accepts *shell* syntax, not strict JSON:
  *   { _id: ObjectId("…"), when: ISODate("…"), n: NumberLong(12) }
  *
- * We evaluate the expression inside a sandboxed function whose scope only
- * exposes the BSON constructors, then normalise the result.
+ * The expression is evaluated by a function whose parameters shadow the
+ * BSON constructors below. This is not a security sandbox: it runs in the
+ * extension host, so it must only ever receive text the user typed.
  */
 const BSON_GLOBALS = {
-  ObjectId,
-  ObjectID: ObjectId,
-  ISODate: (value?: string | Date) => (value === undefined ? new Date() : new Date(value as string)),
-  Date: (value?: string | number) => new Date(value as string | number),
-  NumberLong: (value?: string | number) => Long.fromValue(value as string | number),
-  NumberInt: (value: string | number) => new Int32(Number(value)),
-  NumberDecimal: (value: string | number) => Decimal128.fromString(String(value)),
-  Double: (value: number) => new Double(value),
-  Int32,
-  Long,
-  Decimal128,
-  Binary,
-  UUID: (value?: string) => (value === undefined ? new UUID() : new UUID(value)),
-  Timestamp: (value: { t: number; i: number }) => new Timestamp(value),
-  DBRef,
-  MinKey: () => new MinKey(),
-  MaxKey: () => new MaxKey(),
-  Code,
-  RegExp: (pattern: string, flags?: string) => new RegExp(pattern, flags),
-  Symbol: (value: string) => value,
+  ObjectId: callable(ObjectId),
+  ObjectID: callable(ObjectId),
+  ISODate: factory((value?: string | number | Date) => (value === undefined ? new Date() : new Date(value))),
+  Date: factory((value?: string | number) => (value === undefined ? new Date() : new Date(value))),
+  NumberLong: factory((value: string | number = 0) =>
+    typeof value === 'string' ? Long.fromString(value) : Long.fromNumber(value)
+  ),
+  NumberInt: factory((value: string | number = 0) => new Int32(Number(value))),
+  NumberDecimal: factory((value: string | number = 0) => Decimal128.fromString(String(value))),
+  Double: factory((value: number | string = 0) => new Double(Number(value))),
+  Int32: callable(Int32),
+  Long: callable(Long),
+  Decimal128: callable(Decimal128),
+  Binary: callable(Binary),
+  UUID: factory((value?: string) => (value === undefined ? new UUID() : new UUID(value))),
+  Timestamp: factory((value: { t: number; i: number }) => new Timestamp(value)),
+  DBRef: callable(DBRef),
+  MinKey: factory(() => new MinKey()),
+  MaxKey: factory(() => new MaxKey()),
+  Code: callable(Code),
+  RegExp: factory((pattern: string, flags?: string) => new RegExp(pattern, flags)),
+  Symbol: factory((value: string) => value),
   undefinedValue: undefined
 };
 
@@ -128,7 +157,12 @@ export function parseStage(text: string): Document | null {
     return null;
   }
   if (keys.length !== 1 || !keys[0].startsWith('$')) {
-    throw new QueryParseError('A stage must contain exactly one aggregation operator', trimmed);
+    const found = keys.length > 1 ? ` but has ${keys.length}: ${keys.join(', ')}` : ` but has "${keys[0]}"`;
+    const hint = keys.length > 1 ? ' Put each stage in its own { } object: [{ $match: … }, { $project: … }].' : '';
+    throw new QueryParseError(
+      `A stage must contain exactly one aggregation operator${found}.${hint}`,
+      trimmed
+    );
   }
   return parsed;
 }

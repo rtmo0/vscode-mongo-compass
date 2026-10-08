@@ -1,5 +1,11 @@
 import * as vscode from 'vscode';
-import { MongoClient, type Document, type ReadPreferenceMode } from 'mongodb';
+import {
+  MongoClient,
+  type Document,
+  type MongoClientOptions,
+  type ReadPreferenceMode
+} from 'mongodb';
+import { parseConnectionString } from './connectionString';
 import type {
   ConnectionOptions,
   ConnectionState,
@@ -88,14 +94,25 @@ export class ConnectionManager {
     }
 
     try {
-      const client = new MongoClient(uri, {
-        serverSelectionTimeoutMS:
-          entry.options.serverSelectionTimeoutMS ?? config.connectionTimeoutMS,
-        readPreference: (entry.options.readPreference ?? config.readPreference) as ReadPreferenceMode,
+      // Options passed to MongoClient override the URI, so only fall back to
+      // the global settings when neither the connection nor its URI sets them.
+      const uriOptions = uriOptionNames(uri);
+      const clientOptions: MongoClientOptions = {
         monitorCommands: false,
-        directConnection: false,
         appName: 'MongoDB Compass for VS Code'
-      });
+      };
+      if (entry.options.serverSelectionTimeoutMS !== undefined) {
+        clientOptions.serverSelectionTimeoutMS = entry.options.serverSelectionTimeoutMS;
+      } else if (!uriOptions.has('serverselectiontimeoutms')) {
+        clientOptions.serverSelectionTimeoutMS = config.connectionTimeoutMS;
+      }
+      if (entry.options.readPreference) {
+        clientOptions.readPreference = entry.options.readPreference;
+      } else if (!uriOptions.has('readpreference')) {
+        clientOptions.readPreference = config.readPreference as ReadPreferenceMode;
+      }
+
+      const client = new MongoClient(uri, clientOptions);
 
       await client.connect();
       const topology = await readTopology(client);
@@ -168,6 +185,15 @@ export class ConnectionManager {
   dispose(): void {
     void this.disconnectAll();
     this._onDidChange.dispose();
+  }
+}
+
+/** Lower-cased names of the options set in a connection string's query. */
+function uriOptionNames(uri: string): Set<string> {
+  try {
+    return new Set(Object.keys(parseConnectionString(uri).options).map((key) => key.toLowerCase()));
+  } catch {
+    return new Set();
   }
 }
 

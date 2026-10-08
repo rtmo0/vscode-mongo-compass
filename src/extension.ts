@@ -161,6 +161,33 @@ async function confirmDangerous(message: string): Promise<boolean> {
   return answer === 'Yes';
 }
 
+type EnvRef = (name: string) => string;
+
+/**
+ * Open an editor terminal that runs a MongoDB CLI tool.
+ *
+ * Values (URIs with credentials, paths) are passed through the terminal
+ * environment so they never show up in the command line or shell history.
+ * Windows terminals are pinned to PowerShell because cmd and PowerShell
+ * reference environment variables differently from POSIX shells.
+ */
+function runMongoToolInTerminal(
+  name: string,
+  env: Record<string, string>,
+  command: (ref: EnvRef) => string
+): void {
+  const isWindows = process.platform === 'win32';
+  const ref: EnvRef = isWindows ? (variable) => `\${env:${variable}}` : (variable) => `\${${variable}}`;
+  const terminal = vscode.window.createTerminal({
+    name,
+    location: vscode.TerminalLocation.Editor,
+    env,
+    ...(isWindows ? { shellPath: 'powershell.exe', shellArgs: ['-NoLogo'] } : {})
+  });
+  terminal.show();
+  terminal.sendText(command(ref), true);
+}
+
 async function ensureMongoToolAvailable(tool: 'mongodump' | 'mongorestore'): Promise<boolean> {
   try {
     await execFileAsync(process.platform === 'win32' ? 'where' : 'which', [tool]);
@@ -451,17 +478,15 @@ function registerExplorerCommands(context: vscode.ExtensionContext, s: Services)
         const databaseName = arg instanceof DatabaseNode ? arg.database.name : arg.databaseName;
         const collectionName = arg instanceof CollectionNode ? arg.collection.name : undefined;
         const uri = connectionStringForDatabase(arg.connection.options.connectionString, databaseName);
-        const terminal = vscode.window.createTerminal({
-          name: `mongosh: ${databaseName}`,
-          location: vscode.TerminalLocation.Editor,
-          env: {
+        runMongoToolInTerminal(
+          `mongosh: ${databaseName}`,
+          {
             MONGO_COMPASS_URI: uri,
             MONGO_COMPASS_DATABASE: databaseName,
             MONGO_COMPASS_COLLECTION: collectionName ?? ''
-          }
-        });
-        terminal.show();
-        terminal.sendText('mongosh "$MONGO_COMPASS_URI"', true);
+          },
+          (ref) => `mongosh "${ref('MONGO_COMPASS_URI')}"`
+        );
       }
     ),
 
@@ -1095,18 +1120,14 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
         return;
       }
 
-      const terminal = vscode.window.createTerminal({
-        name: `mongodump: ${databaseName}`,
-        location: vscode.TerminalLocation.Editor,
-        env: {
+      runMongoToolInTerminal(
+        `mongodump: ${databaseName}`,
+        {
           MONGO_COMPASS_URI: connectionStringForDatabase(connection.options.connectionString, databaseName),
           MONGO_COMPASS_DUMP: target.fsPath
-        }
-      });
-      terminal.show();
-      terminal.sendText(
-        'mongodump --uri="$MONGO_COMPASS_URI" --archive="$MONGO_COMPASS_DUMP" --gzip',
-        true
+        },
+        (ref) =>
+          `mongodump --uri="${ref('MONGO_COMPASS_URI')}" --archive="${ref('MONGO_COMPASS_DUMP')}" --gzip`
       );
     }),
 
@@ -1166,27 +1187,23 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
       const sourceStat = await vscode.workspace.fs.stat(source[0]);
       const isDirectory = (sourceStat.type & vscode.FileType.Directory) !== 0;
       const isGzip = dumpPath.toLowerCase().endsWith('.gz');
-      const restoreArgs = [
-        '--uri="$MONGO_COMPASS_URI"',
-        '--nsFrom="$MONGO_COMPASS_SOURCE_DATABASE.*"',
-        '--nsTo="$MONGO_COMPASS_DATABASE.*"',
-        restoreMode.drop ? '--drop' : '',
-        isGzip ? '--gzip' : '',
-        isDirectory ? '"$MONGO_COMPASS_DUMP"' : '--archive="$MONGO_COMPASS_DUMP"'
-      ].filter(Boolean).join(' ');
-
-      const terminal = vscode.window.createTerminal({
-        name: `Restore: ${databaseName.trim()}`,
-        location: vscode.TerminalLocation.Editor,
-        env: {
+      runMongoToolInTerminal(
+        `Restore: ${databaseName.trim()}`,
+        {
           MONGO_COMPASS_URI: connection.options.connectionString,
           MONGO_COMPASS_DATABASE: databaseName.trim(),
           MONGO_COMPASS_SOURCE_DATABASE: sourceDatabaseName.trim(),
           MONGO_COMPASS_DUMP: dumpPath
-        }
-      });
-      terminal.show();
-      terminal.sendText(`mongorestore ${restoreArgs}`, true);
+        },
+        (ref) => ['mongorestore',
+          `--uri="${ref('MONGO_COMPASS_URI')}"`,
+          `--nsFrom="${ref('MONGO_COMPASS_SOURCE_DATABASE')}.*"`,
+          `--nsTo="${ref('MONGO_COMPASS_DATABASE')}.*"`,
+          restoreMode.drop ? '--drop' : '',
+          isGzip ? '--gzip' : '',
+          isDirectory ? `"${ref('MONGO_COMPASS_DUMP')}"` : `--archive="${ref('MONGO_COMPASS_DUMP')}"`
+        ].filter(Boolean).join(' ')
+      );
     }),
 
     vscode.commands.registerCommand('mongoCompass.exportCollection', async (arg?: CollectionNode) => {
@@ -1208,19 +1225,16 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
         return;
       }
 
-      const terminal = vscode.window.createTerminal({
-        name: `mongodump: ${ns.toString()}`,
-        location: vscode.TerminalLocation.Editor,
-        env: {
+      runMongoToolInTerminal(
+        `mongodump: ${ns.toString()}`,
+        {
           MONGO_COMPASS_URI: connectionStringForDatabase(arg.connection.options.connectionString, ns.database),
           MONGO_COMPASS_COLLECTION: ns.collection,
           MONGO_COMPASS_DUMP: target.fsPath
-        }
-      });
-      terminal.show();
-      terminal.sendText(
-        'mongodump --uri="$MONGO_COMPASS_URI" --collection="$MONGO_COMPASS_COLLECTION" --archive="$MONGO_COMPASS_DUMP" --gzip',
-        true
+        },
+        (ref) =>
+          `mongodump --uri="${ref('MONGO_COMPASS_URI')}" --collection="${ref('MONGO_COMPASS_COLLECTION')}" ` +
+          `--archive="${ref('MONGO_COMPASS_DUMP')}" --gzip`
       );
     }),
 
@@ -1258,28 +1272,24 @@ function registerToolCommands(context: vscode.ExtensionContext, s: Services): vo
       const sourceStat = await vscode.workspace.fs.stat(source[0]);
       const isDirectory = (sourceStat.type & vscode.FileType.Directory) !== 0;
       const isGzip = dumpPath.toLowerCase().endsWith('.gz');
-      const restoreArgs = [
-        '--uri="$MONGO_COMPASS_URI"',
-        '--nsInclude="*.$MONGO_COMPASS_COLLECTION"',
-        '--nsFrom="*.$MONGO_COMPASS_COLLECTION"',
-        '--nsTo="$MONGO_COMPASS_DATABASE.$MONGO_COMPASS_COLLECTION"',
-        restoreMode.drop ? '--drop' : '',
-        isGzip ? '--gzip' : '',
-        isDirectory ? '"$MONGO_COMPASS_DUMP"' : '--archive="$MONGO_COMPASS_DUMP"'
-      ].filter(Boolean).join(' ');
-
-      const terminal = vscode.window.createTerminal({
-        name: `mongorestore: ${arg.namespace.toString()}`,
-        location: vscode.TerminalLocation.Editor,
-        env: {
+      runMongoToolInTerminal(
+        `mongorestore: ${arg.namespace.toString()}`,
+        {
           MONGO_COMPASS_URI: arg.connection.options.connectionString,
           MONGO_COMPASS_DATABASE: arg.namespace.database,
           MONGO_COMPASS_COLLECTION: arg.namespace.collection,
           MONGO_COMPASS_DUMP: dumpPath
-        }
-      });
-      terminal.show();
-      terminal.sendText(`mongorestore ${restoreArgs}`, true);
+        },
+        (ref) => ['mongorestore',
+          `--uri="${ref('MONGO_COMPASS_URI')}"`,
+          `--nsInclude="*.${ref('MONGO_COMPASS_COLLECTION')}"`,
+          `--nsFrom="*.${ref('MONGO_COMPASS_COLLECTION')}"`,
+          `--nsTo="${ref('MONGO_COMPASS_DATABASE')}.${ref('MONGO_COMPASS_COLLECTION')}"`,
+          restoreMode.drop ? '--drop' : '',
+          isGzip ? '--gzip' : '',
+          isDirectory ? `"${ref('MONGO_COMPASS_DUMP')}"` : `--archive="${ref('MONGO_COMPASS_DUMP')}"`
+        ].filter(Boolean).join(' ')
+      );
     }),
 
     vscode.commands.registerCommand('mongoCompass.showServerStatus', async () => {

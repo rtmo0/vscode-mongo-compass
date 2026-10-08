@@ -12,6 +12,8 @@ import { getConfig } from '../core/config';
 import { ImportExportService, type ExportFormat } from '../core/importExport';
 import { logger } from '../core/logger';
 import type { AggregationStage } from '../core/types';
+import { collectFieldPaths } from '../core/fieldPaths';
+import { toShellSyntax } from '../core/shellFormat';
 
 interface PipelinePayload {
   pipelineText: string;
@@ -24,6 +26,12 @@ interface StagePayload {
 }
 
 const AGGREGATION_PREVIEW_LIMIT = 10;
+/** Documents shown per stage in the visual builder's preview. */
+const STAGE_PREVIEW_LIMIT = 5;
+/** Documents sampled to discover field names for autocomplete. */
+const FIELD_SAMPLE_SIZE = 100;
+/** Stages that are only valid as the first stage of a pipeline. */
+const FIRST_ONLY_STAGES = ['$search', '$searchMeta', '$vectorSearch', '$geoNear', '$collStats', '$indexStats', '$documents', '$changeStream'];
 
 /**
  * Aggregation Pipeline Builder — the equivalent of Compass'
@@ -186,8 +194,9 @@ export class AggregationPanel extends BaseWebviewPanel {
       await this.runPipeline(this.pipelineStages(payload), undefined, true, respond);
     });
 
-    this.registerHandler('cancel', () => {
+    this.registerHandler('cancel', (_msg, respond) => {
       this.abortController?.abort();
+      respond({ cancelled: true });
     });
 
     this.registerHandler('count', async (msg, respond) => {
@@ -342,6 +351,105 @@ export class AggregationPanel extends BaseWebviewPanel {
       });
     });
 
+    // Field paths available at a stage: run the stages before it on a sample.
+    this.registerHandler('stageFields', async (msg, respond) => {
+      const payload = msg.payload as { pipelineText?: string };
+      const service = await this.service();
+      const stages = payload.pipelineText?.trim()
+        ? parsePipeline(payload.pipelineText).filter((stage) => !('$out' in stage) && !('$merge' in stage))
+        : [];
+      if (stages.length === 0) {
+        const sample = await service.collection(this.namespace).find({}, { limit: FIELD_SAMPLE_SIZE }).toArray();
+        respond(collectFieldPaths(sample));
+        return;
+      }
+      const maxTimeMS = 5000;
+      let docs: Document[];
+      try {
+        docs = await service.aggregate(this.namespace, [...stages, { $limit: FIELD_SAMPLE_SIZE }], {}, { maxTimeMS });
+      } catch (err) {
+        // Too slow on the full collection (e.g. a $group): retry on a sample,
+        // unless the first stage must stay first ($search, $geoNear, …).
+        if (FIRST_ONLY_STAGES.some((name) => name in stages[0])) {
+          throw err;
+        }
+        docs = await service.aggregate(
+          this.namespace,
+          [{ $limit: 1000 }, ...stages, { $limit: FIELD_SAMPLE_SIZE }],
+          {},
+          { maxTimeMS }
+        );
+      }
+      respond(collectFieldPaths(docs));
+    });
+
+    // ── visual builder ──
+    // Split the pipeline into stages for the builder: each stage's body as
+    // shell source, plus its top-level options for the structured forms.
+    this.registerHandler('parseStages', (msg, respond) => {
+      const payload = msg.payload as PipelinePayload;
+      const stages = parsePipeline(payload.pipelineText).map((stage, index) => {
+        const keys = Object.keys(stage);
+        if (keys.length !== 1 || !keys[0].startsWith('$')) {
+          throw new Error(
+            `Stage ${index + 1} must contain exactly one aggregation operator but has ${keys.length ? keys.join(', ') : 'none'}.`
+          );
+        }
+        const operator = keys[0];
+        const body = stage[operator] as unknown;
+        const options: Record<string, { text: string; string?: string }> = {};
+        if (body && typeof body === 'object' && !Array.isArray(body) && Object.getPrototypeOf(body) === Object.prototype) {
+          for (const [key, value] of Object.entries(body as Document)) {
+            options[key] = {
+              text: toShellSyntax(value, 4),
+              ...(typeof value === 'string' ? { string: value } : {})
+            };
+          }
+        }
+        return { operator, body: toShellSyntax(body, 2), options };
+      });
+      respond({ stages });
+    });
+
+    this.registerHandler('listCollections', async (_msg, respond) => {
+      const service = await this.service();
+      const collections = await service.listCollections(this.namespace.database);
+      respond({ collections: collections.map((c) => ({ name: c.name, type: c.type })) });
+    });
+
+    // Fields of another collection in the same database ($lookup / $graphLookup targets).
+    this.registerHandler('collectionFields', async (msg, respond) => {
+      const payload = msg.payload as { collection: string };
+      const service = await this.service();
+      const sample = await service
+        .collection(new Namespace(this.namespace.database, payload.collection))
+        .find({}, { limit: FIELD_SAMPLE_SIZE, maxTimeMS: 5000 })
+        .toArray();
+      respond(collectFieldPaths(sample));
+    });
+
+    // Output of the pipeline up to (and including) one stage, for the builder's stage cards.
+    this.registerHandler('previewStage', async (msg, respond) => {
+      const payload = msg.payload as PipelinePayload;
+      const pipeline = parsePipeline(payload.pipelineText);
+      if (pipeline.some((stage) => '$out' in stage || '$merge' in stage)) {
+        respond({ documents: [], warning: 'Preview is unavailable for $out / $merge stages.' });
+        return;
+      }
+      const started = Date.now();
+      const service = await this.service();
+      const documents = await service.aggregate(
+        this.namespace,
+        [...pipeline, { $limit: STAGE_PREVIEW_LIMIT }],
+        {},
+        { maxTimeMS: getConfig().maxTimeMS }
+      );
+      respond({
+        documents: documents.map((d) => EJSON.stringify(d, undefined, 2, { relaxed: false })),
+        elapsedMS: Date.now() - started
+      });
+    });
+
     this.registerHandler('stageHelp', (msg, respond) => {
       const payload = msg.payload as { stage: string };
       const help = STAGE_OPERATORS.find((s) => s.name === payload.stage);
@@ -366,7 +474,8 @@ export class AggregationPanel extends BaseWebviewPanel {
   ): Promise<void> {
     const started = Date.now();
     this.abortController?.abort();
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.abortController = controller;
 
     const enabledStages = stages.filter((s) => s.enabled);
     const cutIndex = upToStageId
@@ -392,7 +501,7 @@ export class AggregationPanel extends BaseWebviewPanel {
       if (hasOutputStage) {
         if (executeOutputStages) {
           await service.aggregate(this.namespace, pipeline, {}, {
-            signal: this.abortController.signal
+            signal: controller.signal
           });
           this.history.add({
             connectionId: this.connectionId,
@@ -428,12 +537,14 @@ export class AggregationPanel extends BaseWebviewPanel {
 
       const previewPipeline = [...pipeline, { $limit: AGGREGATION_PREVIEW_LIMIT }];
       const documents = await service.aggregate(this.namespace, previewPipeline, {}, {
-        signal: this.abortController.signal
+        signal: controller.signal
       });
 
       const count = await service.aggregateCount(this.namespace, pipeline, {
-        signal: this.abortController.signal
+        signal: controller.signal
       });
+      // aggregateCount swallows its own errors, including an abort.
+      controller.signal.throwIfAborted();
 
       this.history.add({
         connectionId: this.connectionId,
@@ -455,10 +566,16 @@ export class AggregationPanel extends BaseWebviewPanel {
         elapsedMS: Date.now() - started
       });
     } catch (err) {
-      const error = err as Error;
-      if (this.abortController?.signal.aborted) {
+      let error = err as Error & { code?: number };
+      if (controller.signal.aborted) {
+        logger.warn('Pipeline aborted', { ns: this.namespace.toString() });
         respond({ documents: [], stageId: upToStageId, aborted: true, elapsedMS: 0 });
         return;
+      }
+      if (error.code === 50 || error.name === 'MongoOperationTimeoutError') {
+        error = new Error(
+          `Pipeline exceeded Max Time MS (${getConfig().maxTimeMS} ms). Add a $match / $limit earlier or raise mongoCompass.maxTimeMS.`
+        );
       }
       this.history.add({
         connectionId: this.connectionId,

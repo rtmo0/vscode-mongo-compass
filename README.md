@@ -1,6 +1,6 @@
 # MongoDB Compass for VS Code
 
-An independent MongoDB GUI for VS Code: connections, document browsing with a query bar, CRUD, an aggregation pipeline builder with live preview, index management, schema analysis, explain plans, validation rules, import/export, server stats and query history.
+An independent MongoDB GUI for VS Code: connections, document browsing with a query bar, CRUD, an aggregation pipeline editor and visual stage builder with `$lookup` / `$graphLookup` forms, context-aware autocomplete, index management, schema analysis, explain plans, validation rules, import/export, server stats and query history.
 
 > This community extension is not affiliated with, endorsed by, or sponsored by MongoDB, Inc. MongoDB and MongoDB Compass are trademarks of MongoDB, Inc.
 
@@ -13,6 +13,7 @@ Built on the official [`mongodb`](https://www.npmjs.com/package/mongodb) Node dr
 - Connect with a URI directly
 - Credentials stored securely in the OS keychain via VS Code `SecretStorage`
 - Advanced options: read preference, server selection timeout, notes, color
+- Options in the connection string (`readPreference`, `directConnection`, `serverSelectionTimeoutMS`, …) are respected; the extension settings only fill in what the URI leaves out
 - Topology detection (standalone / replica set / sharded / Atlas), server version
 - Status bar indicator for the active connection
 
@@ -25,20 +26,35 @@ Built on the official [`mongodb`](https://www.npmjs.com/package/mongodb) Node dr
 
 ### Documents (Compass `compass-crud` + `compass-query-bar`)
 - Query bar: **filter, project, sort, collation, skip, limit, maxTimeMS**
-- Shell-style BSON parsing: `ObjectId("…")`, `ISODate("…")`, `NumberLong(…)`, etc.
+- Shell-style BSON parsing: `ObjectId("…")`, `ISODate("…")`, `NumberLong(…)`, `new Int32(…)`, regex literals, etc.
+- **Autocomplete** in Filter / Project / Sort (opens while typing or with <kbd>Ctrl</kbd>+<kbd>Space</kbd>):
+  - field names sampled from the collection, with their BSON types
+  - query operators (`$gt`, `$in`, `$elemMatch`, `$regex`, …) inserted as snippets
+  - type-aware values right after a field is picked: strings → `"…"`, regex, `$in`; numbers → comparisons and ranges; dates → `ISODate("…")` and date ranges; ObjectIds → `ObjectId("…")`; arrays → element values, `$elemMatch`, `$size`, `$all`
+  - projection values (`1` / `0`, `$slice` and `$elemMatch` for arrays) and sort directions
+- **Syntax highlighting** in the query bar and every editor
+- **Reset** restores the query bar to the configured defaults and runs Find
 - List / Table / JSON view modes
 - Pagination with matched/total counts and timing
 - Insert / edit / clone / delete documents
 - Explain plan for the current query
 - Save query to "My Queries", export query to language, copy as mongosh snippet
-- Query cancellation
+- Query cancellation (keeps the previous results; a timeout is reported as exceeding Max Time MS)
 
 ### Aggregation Pipeline Builder (Compass `compass-aggregations`)
-- Stage-by-stage editor with enable/disable, reorder, duplicate, delete
-- Live per-stage preview + auto-preview
-- Stage catalogue with templates ($match, $group, $lookup, $search, $vectorSearch, $out, $merge, …)
-- Run / count / explain the whole pipeline
-- $out / $merge safety warning
+- Two editing modes, switchable at any time with **Text | Builder**; both edit the same pipeline
+- **Text mode**: pipeline editor with syntax highlighting and context-aware autocomplete
+  - stages, their options (`$lookup.from`, `$unwind.path`, …), accumulators in `$group`, 60+ expression operators
+  - `"$field"` references and `$$ROOT` / `$$NOW` system variables
+  - field names *as they arrive at the current stage*: after a `$group` or `$project` you get its output fields, not the collection's
+  - nested pipelines in `$lookup`, `$unionWith` and `$facet` are understood; picking a stage after an existing operator starts a new stage
+- **Builder mode**: one card per stage — change the operator, move, duplicate, delete, and show the **output of each stage** (first 5 documents)
+  - **`$lookup` form**: pick the collection, choose Equality (`localField` / `foreignField`), Pipeline (`let` + sub-pipeline) or Both; field pickers for local and joined fields; one-click `$unwind` of the result
+  - **`$graphLookup` form**: `from`, `startWith`, `connectFromField` / `connectToField` pickers, `as`, `maxDepth`, `depthField`, `restrictSearchWithMatch`
+  - every other stage gets a body editor with the same autocomplete as Text mode
+- Stage catalogue with templates ($match, $group, $lookup, $graphLookup, $facet, $setWindowFields, $search, $vectorSearch, $out, $merge, …)
+- Run / count / explain the whole pipeline, with cancellation
+- $out / $merge safety warning; previews and field discovery never execute them
 - Save pipeline, create a view from the pipeline
 - Export pipeline to language / mongosh
 
@@ -124,6 +140,8 @@ src/
     connectionStore.ts     # connection-storage (SecretStorage)
     dataService.ts         # mongodb-data-service
     bsonParser.ts          # mongodb-query-parser (shell syntax)
+    shellFormat.ts         # BSON → mongosh source (lossless round-trip with bsonParser)
+    fieldPaths.ts          # field paths + types sampled for autocomplete
     schemaAnalyzer.ts      # mongodb-schema
     explainHelper.ts       # explain-plan-helper
     exportToLanguage.ts    # bson-transpilers / export-to-language
@@ -138,7 +156,8 @@ src/
     aggregationPanel.ts    # compass-aggregations
     dataPanel.ts           # indexes/schema/validation/explain/stats/history/…
     documents/, aggregation/, dataview/   # webview front-ends
-    shared/                # shared CSS + client helpers
+    aggregation/builder.ts # visual pipeline builder ($lookup / $graphLookup forms)
+    shared/                # shared CSS + client helpers (highlighting, autocomplete)
   commands/        # connection form
   extension.ts     # activation + command registration
 ```
@@ -168,7 +187,9 @@ Report defects through the repository issue tracker. Include the extension versi
 
 - This is an independent implementation inspired by MongoDB Compass; it is not affiliated with MongoDB, Inc.
 - Atlas Search indexes require an Atlas deployment.
-- The webview editors use plain textareas with EJSON/shell syntax (no CodeMirror autocompletion as in Compass).
+- The webview editors are lightweight textareas with their own highlighting and autocomplete rather than a full code editor; colours follow the VS Code theme's debug / symbol colours because webviews cannot read the editor's token theme.
+- Autocomplete field names come from a sample of 100 documents, so rarely used fields may be missing. Collection names are not suggested inside `$lookup.from` in Text mode (the Builder form lists them).
+- Editing a pipeline in Builder mode reformats its text and drops comments.
 - Data modeling diagrams, the embedded mongosh, and the GenAI assistant from Compass are out of scope.
 
 ## License

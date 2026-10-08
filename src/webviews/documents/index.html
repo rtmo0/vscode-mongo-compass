@@ -21,6 +21,7 @@
       <div class="mc-toolbar" id="documents-toolbar">
         <span class="mc-namespace" id="namespace">—</span>
         <button class="mc-btn primary" id="btn-find" title="Find (Enter)">▶ Find</button>
+        <button class="mc-btn" id="btn-reset" title="Reset filter and options to defaults, then Find">↺ Reset</button>
         <button class="mc-btn" id="btn-cancel" title="Cancel running query">■ Cancel</button>
         <button class="mc-btn" id="btn-explain" title="Explain plan">Explain</button>
         <button class="mc-btn" id="btn-insert" title="Insert document">＋ Insert</button>
@@ -63,7 +64,7 @@
           <input
             class="mc-input filter-input"
             id="filter"
-            placeholder='Filter, e.g. { name: "Ada", age: { $gte: 30 } }'
+            placeholder='Filter, e.g. { name: "Ada", age: { $gte: 30 } }  (Ctrl+Space for suggestions)'
             spellcheck="false"
           />
           <span class="mc-options-toggle" id="toggle-options">⚙ Options ▾</span>

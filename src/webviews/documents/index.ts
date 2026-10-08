@@ -11,10 +11,12 @@ import {
   createDocumentList,
   createDocumentJsonList,
   highlightJson,
+  attachInputHighlight,
   formatJsonCell,
   formatNumber,
   debounce
 } from '../shared/client';
+import { attachQueryAutocomplete, toFieldInfo, type FieldInfo, type FieldPathSample } from '../shared/queryAutocomplete';
 
 interface QueryState {
   filter: Record<string, unknown>;
@@ -114,6 +116,8 @@ interface UiState {
   validation: ValidationData | null;
   loading: boolean;
   error: string | null;
+  /** Informational status message (e.g. "Query cancelled") shown instead of counts. */
+  notice?: string | null;
 }
 
 const DEFAULT_QUERY: QueryState = {
@@ -129,6 +133,15 @@ const DEFAULT_QUERY: QueryState = {
   limit: 20,
   maxTimeMS: 60000
 };
+
+/** Default limit / maxTimeMS from the extension settings, used by Reset. */
+let queryDefaults = { limit: DEFAULT_QUERY.limit, maxTimeMS: DEFAULT_QUERY.maxTimeMS };
+
+function applyConfigDefaults(config?: { defaultLimit: number; maxTimeMS: number }): void {
+  if (config) {
+    queryDefaults = { limit: config.defaultLimit, maxTimeMS: config.maxTimeMS };
+  }
+}
 
 let state: UiState = getState<UiState>({
   namespace: '—',
@@ -149,6 +162,8 @@ state.activeSection ??= 'documents';
 state.indexes ??= null;
 state.schema ??= null;
 state.validation ??= null;
+// A query in flight when the webview was reloaded will never answer.
+state.loading = false;
 
 // ───────────────────────────── element refs ─────────────────────────────
 
@@ -187,6 +202,7 @@ on('init', (payload) => {
   state.namespace = init.namespace;
   state.query = { ...DEFAULT_QUERY, ...init.query };
   state.viewMode = init.viewMode ?? 'list';
+  applyConfigDefaults(init.config);
   if (init.config) {
     state.query.limit = state.query.limit || init.config.defaultLimit;
     state.query.maxTimeMS = state.query.maxTimeMS || init.config.maxTimeMS;
@@ -202,7 +218,13 @@ on('refresh', () => {
 
 void request('ready').then((payload) => {
   if (payload) {
-    const init = payload as { namespace: string; query: QueryState; viewMode: 'list' | 'table' | 'json' };
+    const init = payload as {
+      namespace: string;
+      query: QueryState;
+      viewMode: 'list' | 'table' | 'json';
+      config?: { defaultLimit: number; maxTimeMS: number };
+    };
+    applyConfigDefaults(init.config);
     state.namespace = init.namespace;
     state.query = { ...DEFAULT_QUERY, ...init.query };
     state.viewMode = init.viewMode ?? 'list';
@@ -217,6 +239,7 @@ void request('ready').then((payload) => {
 // ───────────────────────────── toolbar wiring ─────────────────────────────
 
 $('btn-find').addEventListener('click', () => void runFind());
+$('btn-reset').addEventListener('click', () => void resetQuery());
 $('btn-cancel').addEventListener('click', () => void request('cancel'));
 $('btn-explain').addEventListener('click', () => void showExplain());
 $('btn-insert').addEventListener('click', () => showInsertModal());
@@ -266,6 +289,28 @@ filterEl.addEventListener('keydown', (e) => {
   }
 });
 
+for (const input of [filterEl, projectEl, sortEl, collationEl]) {
+  attachInputHighlight(input);
+}
+
+// Field paths are sampled once per panel and shared by all query inputs.
+let queryFields: FieldInfo[] | null = null;
+let queryFieldsPromise: Promise<FieldInfo[]> | null = null;
+function queryFieldsAtCaret(): FieldInfo[] | Promise<FieldInfo[]> {
+  if (queryFields) {
+    return queryFields;
+  }
+  queryFieldsPromise ??= request<FieldPathSample>('schemaFields')
+    .then((result) => (queryFields = toFieldInfo(result)))
+    .finally(() => {
+      queryFieldsPromise = null;
+    });
+  return queryFieldsPromise;
+}
+attachQueryAutocomplete(filterEl, { kind: 'filter', fields: queryFieldsAtCaret });
+attachQueryAutocomplete(projectEl, { kind: 'project', fields: queryFieldsAtCaret });
+attachQueryAutocomplete(sortEl, { kind: 'sort', fields: queryFieldsAtCaret });
+
 for (const input of [projectEl, sortEl, collationEl]) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
@@ -309,16 +354,36 @@ function readQueryFromInputs(): QueryState {
   };
 }
 
+/** Restore every query bar field to its default and run Find. */
+async function resetQuery(): Promise<void> {
+  state.query = { ...DEFAULT_QUERY, ...queryDefaults };
+  syncInputsFromState();
+  await runFind();
+}
+
+/** Sequence number of the latest Find; responses to older Finds are ignored. */
+let findSequence = 0;
+
 async function runFind(): Promise<void> {
   const query = readQueryFromInputs();
+  const sequence = ++findSequence;
   state.query = query;
   state.loading = true;
   state.error = null;
+  state.notice = null;
   render();
   persist();
 
   try {
     const result = (await request('find', { query })) as FindResult;
+    if (sequence !== findSequence) {
+      return;
+    }
+    if (result.aborted) {
+      // Keep the previously shown documents; just report the cancellation.
+      state.notice = 'Query cancelled.';
+      return;
+    }
     state.documents = result.documents ?? [];
     state.count = result.count ?? null;
     state.totalCount = result.totalCount ?? null;
@@ -328,12 +393,17 @@ async function runFind(): Promise<void> {
       syncInputsFromState();
     }
   } catch (err) {
+    if (sequence !== findSequence) {
+      return;
+    }
     state.error = (err as Error).message;
     state.documents = [];
   } finally {
-    state.loading = false;
-    render();
-    persist();
+    if (sequence === findSequence) {
+      state.loading = false;
+      render();
+      persist();
+    }
   }
 }
 
@@ -416,6 +486,7 @@ function render(): void {
   renderStatus();
   renderContent();
   renderPagination();
+  ($('btn-cancel') as HTMLButtonElement).disabled = !state.loading;
 }
 
 function renderSectionTabs(): void {
@@ -476,6 +547,10 @@ function renderStatus(): void {
     statusTextEl.textContent = state.validation
       ? `Level: ${state.validation.validationLevel} · Action: ${state.validation.validationAction}`
       : 'Validation rules';
+    return;
+  }
+  if (state.notice) {
+    statusTextEl.textContent = state.notice;
     return;
   }
   const parts: string[] = [];

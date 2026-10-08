@@ -2,6 +2,36 @@
 
 All notable changes to this extension are documented in this file.
 
+## 0.8.0 - 2026-10-08
+
+### Added
+
+- Visual aggregation pipeline builder (**Text | Builder** toggle) with a card per stage, move / duplicate / delete, and the output of each stage.
+- `$lookup` builder form: collection picker, Equality / Pipeline / Both join modes, local and joined field pickers, `let` and sub-pipeline editors, one-click `$unwind`.
+- `$graphLookup` builder form: `from`, `startWith`, `connectFromField`, `connectToField`, `as`, `maxDepth`, `depthField` and `restrictSearchWithMatch`.
+- Autocomplete in the Documents Filter / Project / Sort inputs: sampled field names with types, operators as snippets, and type-aware value suggestions right after a field is picked.
+- Context-aware autocomplete in the aggregation editor: stages, stage options, accumulators, expression operators, `"$field"` references, and the fields produced by previous stages.
+- Syntax highlighting in the Documents query bar inputs.
+- **Reset** button in Documents that restores the query bar defaults and runs Find.
+
+### Changed
+
+- New syntax highlighter for JSON and mongosh syntax (single-quoted strings, field references, `$$` variables, regex literals, comments) with theme-aware colours in every editor and JSON view.
+- Cancel in Documents and Aggregation keeps the previous results, reports the cancellation, and is enabled only while a query runs.
+- Queries exceeding Max Time MS now report a clear timeout message instead of an empty result.
+- Read preference and server selection timeout from the connection string take precedence over the extension settings.
+- mongosh, mongodump and mongorestore terminals use PowerShell on Windows so their commands work there.
+- A stage with more than one operator now names the operators and explains how to split it.
+
+### Fixed
+
+- Shell constructors such as `ObjectId("…")`, `Int32(…)`, `Long(…)`, `Binary(…)` and `Code(…)` failed with "Class constructor cannot be invoked without 'new'".
+- Clearing the filter input kept applying the previous filter.
+- `directConnection=true` in a connection string was ignored.
+- Strings were not highlighted, and single quotes rendered as `&#39;` in editors.
+- A cancelled aggregation could be reported as an error or recorded as successful, and responses from superseded runs could overwrite newer results.
+- A webview reloaded during a query no longer shows a spinner forever.
+
 ## 0.7.0 - 2026-10-04
 
 ### Changed

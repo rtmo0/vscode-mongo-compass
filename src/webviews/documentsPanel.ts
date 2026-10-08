@@ -12,7 +12,7 @@ import { getConfig } from '../core/config';
 import { ImportExportService, type ExportFormat } from '../core/importExport';
 import { logger } from '../core/logger';
 import { convertFieldsToJsonSchema } from '../core/validationRules';
-import { bsonTypeName } from '../core/schemaAnalyzer';
+import { collectFieldPaths } from '../core/fieldPaths';
 import type { QueryState } from '../core/types';
 
 interface DocumentsPanelState {
@@ -133,10 +133,15 @@ export class DocumentsPanel extends BaseWebviewPanel {
 
   private registerHandlers(): void {
     this.registerHandler('ready', (_msg, respond) => {
+      const config = getConfig();
       respond({
         namespace: this.state.namespace.toString(),
         query: this.state.query,
-        viewMode: this.state.viewMode
+        viewMode: this.state.viewMode,
+        config: {
+          defaultLimit: config.defaultLimit,
+          maxTimeMS: config.maxTimeMS
+        }
       });
     });
 
@@ -146,8 +151,9 @@ export class DocumentsPanel extends BaseWebviewPanel {
       await this.runFind(respond);
     });
 
-    this.registerHandler('cancel', () => {
+    this.registerHandler('cancel', (_msg, respond) => {
       this.abortController?.abort();
+      respond({ cancelled: true });
     });
 
     this.registerHandler('count', async (_msg, respond) => {
@@ -398,11 +404,7 @@ export class DocumentsPanel extends BaseWebviewPanel {
         .collection(this.state.namespace)
         .find({}, { limit: 100 })
         .toArray();
-      const fields = new Set<string>();
-      for (const doc of sample) {
-        collectPaths(doc, '', fields);
-      }
-      respond({ fields: [...fields].sort() });
+      respond(collectFieldPaths(sample));
     });
 
     // ── schema ──
@@ -525,11 +527,16 @@ export class DocumentsPanel extends BaseWebviewPanel {
         query: this.state.query
       });
     } catch (err) {
-      const error = err as Error;
-      if (error.name === 'MongoOperationTimeoutError' || controller.signal.aborted) {
+      let error = err as Error;
+      if (controller.signal.aborted) {
         logger.warn('Query aborted', { ns: this.state.namespace.toString() });
         respond({ documents: [], count: null, totalCount: null, elapsedMS: 0, aborted: true });
         return;
+      }
+      if (error.name === 'MongoOperationTimeoutError') {
+        error = new Error(
+          `Query exceeded Max Time MS (${this.state.query.maxTimeMS} ms). Narrow the filter or raise the limit in Options.`
+        );
       }
       this.history.add({
         connectionId: this.state.connectionId,
@@ -543,7 +550,7 @@ export class DocumentsPanel extends BaseWebviewPanel {
         error: error.message,
         elapsedMS: Date.now() - started
       });
-      throw err;
+      throw error;
     }
   }
 }
@@ -555,7 +562,8 @@ function normalizeQuery(query: QueryState): QueryState {
   const sortText = query.sortText?.trim() ?? '';
   const collationText = query.collationText?.trim() ?? '';
   return {
-    filter: filterText ? parseShellBSON(filterText) : query.filter ?? {},
+    // An empty filter box means "match everything", never the previous filter.
+    filter: filterText ? parseShellBSON(filterText) : {},
     filterText,
     project: projectText ? parseShellBSON(projectText) : {},
     projectText,
@@ -627,26 +635,6 @@ function serialiseDocuments(documents: Document[]): string[] {
   return documents.map((doc) =>
     EJSON.stringify(doc, undefined, 2, { relaxed: false })
   );
-}
-
-function collectPaths(doc: Document, prefix: string, out: Set<string>): void {
-  for (const [key, value] of Object.entries(doc)) {
-    const path = prefix ? `${prefix}.${key}` : key;
-    out.add(path);
-    // Descend only into real subdocuments and into documents stored inside
-    // arrays. Byte arrays (Buffer / Uint8Array / Binary) stay opaque so they
-    // are not expanded into `buffer.0`, `buffer.1`, … pseudo-fields.
-    const type = bsonTypeName(value);
-    if (type === 'Document') {
-      collectPaths(value as Document, path, out);
-    } else if (type === 'Array') {
-      for (const item of value as unknown[]) {
-        if (bsonTypeName(item) === 'Document') {
-          collectPaths(item as Document, path, out);
-        }
-      }
-    }
-  }
 }
 
 export type { DocumentsPanelState };
