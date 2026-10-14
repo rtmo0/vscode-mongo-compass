@@ -2,6 +2,26 @@
 
 All notable changes to this extension are documented in this file.
 
+## 1.0.0 - 2026-10-14
+
+### Changed
+
+- First stable release: the extension is no longer marked as Preview.
+- Query bar, pipeline and other shell-syntax inputs are now parsed and evaluated safely instead of being run as JavaScript. Literals, objects, arrays, arithmetic, BSON helpers (`ObjectId`, `ISODate`, `NumberLong`, …) and a few static methods such as `Date.now()` and `Math.max()` are supported; anything else is rejected with an error.
+- JSON / JSON Lines export writes canonical Extended JSON by default, so Int64, Int32 and Double values keep their types and precision when re-imported.
+- mongosh, mongodump and mongorestore no longer receive the connection string on their command line, where other local users could read the password. mongodump / mongorestore get it through a temporary `--config` file (requires MongoDB Database Tools 100.3.0 or newer), and their output and exit status are shown in the terminal.
+
+### Fixed
+
+- `Date.now()`, `Date.UTC()` and other `Date` statics work in queries.
+- Editing a document no longer turns Double values such as `3.0` and small Int64 values into Int32.
+- Int64 values above 2^53 are no longer rounded on export.
+- JSON / JSON Lines export of a large collection no longer holds the whole file in memory, and a file that cannot be written reports its error instead of crashing the extension host.
+- Commands run from a tree item after the connection was closed reconnect instead of failing with "Cannot read properties of undefined".
+- Opening several panels at once no longer creates (and leaks) one client per panel, Disconnect during a pending connect now cancels it, and a failed connect closes its client.
+- Saving or connecting several connections at the same time no longer loses changes, and connecting no longer reads every saved connection string from the keychain.
+- mongosh and the database tools work when the default terminal shell is fish.
+
 ## 0.8.0 - 2026-10-08
 
 ### Added

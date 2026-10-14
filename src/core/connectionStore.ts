@@ -13,74 +13,99 @@ const SECRET_PREFIX = 'mongoCompass.uri.';
  * in global state.
  */
 export class ConnectionStore {
+  /** Serialises read-modify-write cycles so concurrent saves cannot drop each other's changes. */
+  private queue: Promise<unknown> = Promise.resolve();
+
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly secrets: vscode.SecretStorage
   ) {}
 
   async loadAll(): Promise<ConnectionOptions[]> {
-    const raw = this.context.globalState.get<ConnectionOptions[]>(CONNECTIONS_KEY, []);
-    const restored: ConnectionOptions[] = [];
-    for (const entry of raw) {
-      const secret = await this.secrets.get(SECRET_PREFIX + entry.id);
-      restored.push({
-        ...entry,
-        connectionString: secret ?? entry.connectionString ?? ''
-      });
-    }
+    const restored = await Promise.all(
+      this.readMetadata().map(async (entry) => {
+        const secret = await this.secrets.get(SECRET_PREFIX + entry.id);
+        return { ...entry, connectionString: secret ?? entry.connectionString ?? '' };
+      })
+    );
     return restored.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  async save(connection: ConnectionOptions): Promise<void> {
-    const all = await this.loadAll();
-    const index = all.findIndex((c) => c.id === connection.id);
-    if (index >= 0) {
-      all[index] = connection;
-    } else {
-      all.push(connection);
-    }
-    await this.persist(all, connection);
+  save(connection: ConnectionOptions): Promise<void> {
+    return this.mutate(async (entries) => {
+      if (connection.connectionString) {
+        await this.secrets.store(SECRET_PREFIX + connection.id, connection.connectionString);
+      }
+      const index = entries.findIndex((c) => c.id === connection.id);
+      if (index >= 0) {
+        entries[index] = connection;
+      } else {
+        entries.push(connection);
+      }
+      return true;
+    });
   }
 
-  async remove(id: string): Promise<void> {
-    const all = await this.loadAll();
-    await this.persist(
-      all.filter((c) => c.id !== id),
-      undefined,
-      id
-    );
-    await this.secrets.delete(SECRET_PREFIX + id);
+  remove(id: string): Promise<void> {
+    return this.mutate(async (entries) => {
+      const index = entries.findIndex((c) => c.id === id);
+      if (index >= 0) {
+        entries.splice(index, 1);
+      }
+      await this.secrets.delete(SECRET_PREFIX + id);
+      return index >= 0;
+    });
   }
 
-  private async persist(
-    connections: ConnectionOptions[],
-    withSecret?: ConnectionOptions,
-    removeSecretFor?: string
-  ): Promise<void> {
-    // Strip the connection string from global state — it lives in SecretStorage.
-    const sanitized = connections.map(({ connectionString: _cs, ...rest }) => ({
-      ...rest,
-      connectionString: ''
-    })) as ConnectionOptions[];
-
-    await this.context.globalState.update(CONNECTIONS_KEY, sanitized);
-
-    if (withSecret?.connectionString) {
-      await this.secrets.store(SECRET_PREFIX + withSecret.id, withSecret.connectionString);
-    }
-    if (removeSecretFor) {
-      await this.secrets.delete(SECRET_PREFIX + removeSecretFor);
-    }
-    logger.info('Connection store updated', { count: sanitized.length });
+  /** Record when a connection was last used. Touches metadata only, never the keychain. */
+  touch(id: string, lastUsed = Date.now()): Promise<void> {
+    return this.mutate((entries) => {
+      const target = entries.find((c) => c.id === id);
+      if (!target) {
+        return false;
+      }
+      target.lastUsed = lastUsed;
+      return true;
+    });
   }
 
-  async touch(id: string): Promise<void> {
-    const all = await this.loadAll();
-    const target = all.find((c) => c.id === id);
-    if (!target) {
-      return;
+  /** Stored metadata; `connectionString` is empty except for entries saved before SecretStorage. */
+  private readMetadata(): ConnectionOptions[] {
+    return this.context.globalState
+      .get<ConnectionOptions[]>(CONNECTIONS_KEY, [])
+      .map((entry) => ({ ...entry }));
+  }
+
+  /**
+   * Run `change` on the stored metadata and write it back if it returns true.
+   * Changes run one at a time, each on the result of the previous one.
+   */
+  private mutate(change: (entries: ConnectionOptions[]) => boolean | Promise<boolean>): Promise<void> {
+    const run = this.queue.then(async () => {
+      const entries = this.readMetadata();
+      await this.migrateLegacyConnectionStrings(entries);
+      if (!(await change(entries))) {
+        return;
+      }
+      // Strip connection strings from global state — they live in SecretStorage.
+      const sanitized = entries.map((entry) => ({ ...entry, connectionString: '' }));
+      await this.context.globalState.update(CONNECTIONS_KEY, sanitized);
+      logger.info('Connection store updated', { count: sanitized.length });
+    });
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Move plain-text connection strings left in global state into SecretStorage before they are stripped. */
+  private async migrateLegacyConnectionStrings(entries: ConnectionOptions[]): Promise<void> {
+    for (const entry of entries) {
+      if (!entry.connectionString) {
+        continue;
+      }
+      const key = SECRET_PREFIX + entry.id;
+      if ((await this.secrets.get(key)) === undefined) {
+        await this.secrets.store(key, entry.connectionString);
+      }
     }
-    target.lastUsed = Date.now();
-    await this.save(target);
   }
 }

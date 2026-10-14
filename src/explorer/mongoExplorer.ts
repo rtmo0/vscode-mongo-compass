@@ -27,6 +27,14 @@ export type NodeKind =
   | 'info'
   | 'error';
 
+/** A DataService for a node's connection; throws (shown as an error node) once it has disconnected. */
+function connectedService(connection: LiveConnection): DataService {
+  if (connection.state !== 'connected' || !connection.client) {
+    throw new Error('Not connected');
+  }
+  return new DataService(connection.client, connection.options.id);
+}
+
 export abstract class BaseNode {
   abstract readonly kind: NodeKind;
   abstract getTreeItem(): vscode.TreeItem | Promise<vscode.TreeItem>;
@@ -118,7 +126,7 @@ export class DatabasesNode extends BaseNode {
 
   override async getChildren(): Promise<BaseNode[]> {
     try {
-      const service = new DataService(this.connection.client, this.connection.options.id);
+      const service = connectedService(this.connection);
       const databases = await service.listDatabases();
       if (databases.length === 0) {
         return [new InfoNode('No databases found', 'info')];
@@ -156,7 +164,7 @@ export class DatabaseNode extends BaseNode {
 
   override async getChildren(): Promise<BaseNode[]> {
     try {
-      const service = new DataService(this.connection.client, this.connection.options.id);
+      const service = connectedService(this.connection);
       const collections = await service.listCollections(this.database.name);
       if (collections.length === 0) {
         return [new InfoNode('No collections', 'info')];
@@ -267,7 +275,7 @@ export class IndexesNode extends BaseNode {
 
   override async getChildren(): Promise<BaseNode[]> {
     try {
-      const service = new DataService(this.connection.client, this.connection.options.id);
+      const service = connectedService(this.connection);
       const indexes = await service.listIndexes(this.namespace);
       if (indexes.length === 0) {
         return [new InfoNode('No indexes', 'info')];
@@ -326,7 +334,7 @@ export class SearchIndexesNode extends BaseNode {
 
   override async getChildren(): Promise<BaseNode[]> {
     try {
-      const service = new DataService(this.connection.client, this.connection.options.id);
+      const service = connectedService(this.connection);
       const indexes = await service.listSearchIndexes(this.namespace);
       if (indexes.length === 0) {
         return [new InfoNode('No Atlas Search indexes (Atlas only)', 'info')];

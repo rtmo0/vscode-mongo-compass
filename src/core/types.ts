@@ -21,11 +21,15 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'err
 
 export interface LiveConnection {
   options: ConnectionOptions;
-  client: MongoClient;
+  /** Set only while `state === 'connected'`; use `ConnectionManager.requireClient` to get one. */
+  client?: MongoClient;
   state: ConnectionState;
   error?: string;
   topology?: TopologyInfo;
 }
+
+/** A connection whose client is known to be open. */
+export type ConnectedConnection = LiveConnection & { client: MongoClient };
 
 export interface TopologyInfo {
   serverVersion: string;

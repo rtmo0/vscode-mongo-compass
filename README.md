@@ -100,7 +100,7 @@ Built on the official [`mongodb`](https://www.npmjs.com/package/mongodb) Node dr
 
 - VS Code 1.85 or newer.
 - A reachable MongoDB deployment. Standalone servers, replica sets, sharded clusters and MongoDB Atlas are supported by the official Node.js driver.
-- `mongosh`, `mongodump`, and `mongorestore` must be installed separately and available on `PATH` for the corresponding commands.
+- `mongosh`, `mongodump`, and `mongorestore` must be installed separately and available on `PATH` for the corresponding commands. `mongodump` / `mongorestore` require MongoDB Database Tools 100.3.0 or newer.
 
 ```bash
 npm install
@@ -128,7 +128,7 @@ Press **F5** in VS Code to launch the Extension Development Host.
 | `mongoCompass.showSystemCollections` | `true` | Show `system.*` collections |
 | `mongoCompass.readPreference` | `primary` | Default read preference |
 | `mongoCompass.connectionTimeoutMS` | `30000` | Server selection timeout |
-| `mongoCompass.exportBatchSize` | `1000` | Export/import batch size |
+| `mongoCompass.exportBatchSize` | `1000` | Export batch size |
 | `mongoCompass.autoPreviewPipeline` | `true` | Auto re-run aggregation preview |
 
 ## Architecture

@@ -168,7 +168,10 @@ export class DataService {
       skip: query.skip,
       maxTimeMS: execution.maxTimeMS ?? query.maxTimeMS ?? config.maxTimeMS,
       timeoutMS: execution.maxTimeMS ?? query.maxTimeMS ?? config.maxTimeMS,
-      signal: execution.signal
+      signal: execution.signal,
+      // Keep Int32/Int64/Double wrappers: documents are shown and edited as
+      // canonical EJSON, and plain JS numbers would be saved back as Int32/Double.
+      promoteValues: false
     };
     if (query.project && Object.keys(query.project).length > 0) {
       options.projection = query.project;

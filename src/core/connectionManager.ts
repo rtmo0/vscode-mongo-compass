@@ -7,6 +7,7 @@ import {
 } from 'mongodb';
 import { parseConnectionString } from './connectionString';
 import type {
+  ConnectedConnection,
   ConnectionOptions,
   ConnectionState,
   LiveConnection,
@@ -18,6 +19,10 @@ import { logger } from './logger';
 
 export class ConnectionManager {
   private readonly connections = new Map<string, LiveConnection>();
+  /** In-flight connection attempts, shared by every caller of `connect`. */
+  private readonly pending = new Map<string, Promise<ConnectedConnection>>();
+  /** Bumped by `disconnect` so an in-flight attempt knows it was cancelled. */
+  private readonly generations = new Map<string, number>();
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
@@ -27,8 +32,8 @@ export class ConnectionManager {
     return [...this.connections.values()];
   }
 
-  get connected(): LiveConnection[] {
-    return this.all.filter((c) => c.state === 'connected');
+  get connected(): ConnectedConnection[] {
+    return this.all.filter(isConnected);
   }
 
   get(id: string): LiveConnection | undefined {
@@ -44,7 +49,7 @@ export class ConnectionManager {
     const saved = await this.store.loadAll();
     for (const options of saved) {
       if (!this.connections.has(options.id)) {
-        this.connections.set(options.id, { options, client: undefined as never, state: 'disconnected' });
+        this.connections.set(options.id, { options, state: 'disconnected' });
       }
     }
     this._onDidChange.fire();
@@ -56,11 +61,9 @@ export class ConnectionManager {
 
   async addOrUpdate(options: ConnectionOptions): Promise<void> {
     await this.store.save(options);
-    const existing = this.connections.get(options.id);
-    if (existing && existing.state === 'connected') {
-      await this.disconnect(options.id);
-    }
-    this.connections.set(options.id, { options, client: undefined as never, state: 'disconnected' });
+    // Also cancels an attempt that is still connecting with the old options.
+    await this.disconnect(options.id);
+    this.connections.set(options.id, { options, state: 'disconnected' });
     this._onDidChange.fire();
   }
 
@@ -71,14 +74,35 @@ export class ConnectionManager {
     this._onDidChange.fire();
   }
 
-  async connect(id: string): Promise<LiveConnection> {
+  /**
+   * Connect, or join the attempt already in progress, so concurrent callers
+   * share one MongoClient instead of each opening (and leaking) their own.
+   */
+  connect(id: string): Promise<ConnectedConnection> {
     const entry = this.connections.get(id);
     if (!entry) {
-      throw new Error(`Unknown connection "${id}"`);
+      return Promise.reject(new Error(`Unknown connection "${id}"`));
     }
-    if (entry.state === 'connected' && entry.client) {
-      return entry;
+    if (isConnected(entry)) {
+      return Promise.resolve(entry);
     }
+    const inFlight = this.pending.get(id);
+    if (inFlight) {
+      return inFlight;
+    }
+    const attempt = this.open(id, entry).finally(() => {
+      if (this.pending.get(id) === attempt) {
+        this.pending.delete(id);
+      }
+    });
+    this.pending.set(id, attempt);
+    return attempt;
+  }
+
+  private async open(id: string, entry: LiveConnection): Promise<ConnectedConnection> {
+    const generation = this.generation(id);
+    const isCurrent = (): boolean =>
+      this.generation(id) === generation && this.connections.get(id) === entry;
 
     entry.state = 'connecting';
     entry.error = undefined;
@@ -93,6 +117,7 @@ export class ConnectionManager {
       throw new Error(entry.error);
     }
 
+    let client: MongoClient | undefined;
     try {
       // Options passed to MongoClient override the URI, so only fall back to
       // the global settings when neither the connection nor its URI sets them.
@@ -112,16 +137,19 @@ export class ConnectionManager {
         clientOptions.readPreference = config.readPreference as ReadPreferenceMode;
       }
 
-      const client = new MongoClient(uri, clientOptions);
+      client = new MongoClient(uri, clientOptions);
 
       await client.connect();
       const topology = await readTopology(client);
+
+      if (!isCurrent()) {
+        throw new Error(`Connection to "${entry.options.name}" was cancelled`);
+      }
 
       entry.client = client;
       entry.state = 'connected';
       entry.topology = topology;
       entry.options.lastUsed = Date.now();
-      await this.store.save(entry.options);
 
       logger.info('Connected', {
         connection: entry.options.name,
@@ -129,12 +157,24 @@ export class ConnectionManager {
         topology: topology.topologyType
       });
       this._onDidChange.fire();
-      return entry;
+
+      try {
+        await this.store.touch(id, entry.options.lastUsed);
+      } catch (err) {
+        logger.warn('Could not record last use', { connection: entry.options.name, error: (err as Error).message });
+      }
+      return entry as ConnectedConnection;
     } catch (err) {
-      entry.state = 'error';
-      entry.error = (err as Error).message;
-      logger.error('Connection failed', { connection: entry.options.name, error: entry.error });
-      this._onDidChange.fire();
+      if (client && entry.client !== client) {
+        await client.close(true).catch(() => undefined);
+      }
+      // A cancelled attempt leaves the state that `disconnect` already set.
+      if (isCurrent()) {
+        entry.state = 'error';
+        entry.error = (err as Error).message;
+        logger.error('Connection failed', { connection: entry.options.name, error: entry.error });
+        this._onDidChange.fire();
+      }
       throw err;
     }
   }
@@ -144,37 +184,35 @@ export class ConnectionManager {
     if (!entry) {
       return;
     }
-    if (entry.client) {
+    this.generations.set(id, this.generation(id) + 1);
+    this.pending.delete(id);
+
+    const client = entry.client;
+    entry.client = undefined;
+    entry.state = 'disconnected';
+    entry.topology = undefined;
+    this._onDidChange.fire();
+
+    if (client) {
       try {
-        await entry.client.close(true);
+        await client.close(true);
       } catch (err) {
         logger.warn('Error while closing client', { error: (err as Error).message });
       }
     }
-    entry.client = undefined as never;
-    entry.state = 'disconnected';
-    entry.topology = undefined;
-    this._onDidChange.fire();
   }
 
   async disconnectAll(): Promise<void> {
     await Promise.all(this.all.map((c) => this.disconnect(c.options.id)));
   }
 
-  /** Ensure a connection is live and return its MongoClient. */
-  async requireClient(id: string): Promise<LiveConnection> {
-    const entry = this.connections.get(id);
-    if (!entry) {
-      throw new Error(`Unknown connection "${id}"`);
-    }
-    if (entry.state !== 'connected' || !entry.client) {
-      return this.connect(id);
-    }
-    return entry;
+  /** Ensure a connection is live and return it with its MongoClient. */
+  async requireClient(id: string): Promise<ConnectedConnection> {
+    return this.connect(id);
   }
 
   /** The most recently used connected connection, used as an implicit default. */
-  get activeConnection(): LiveConnection | undefined {
+  get activeConnection(): ConnectedConnection | undefined {
     const connected = this.connected;
     if (connected.length === 0) {
       return undefined;
@@ -186,6 +224,14 @@ export class ConnectionManager {
     void this.disconnectAll();
     this._onDidChange.dispose();
   }
+
+  private generation(id: string): number {
+    return this.generations.get(id) ?? 0;
+  }
+}
+
+function isConnected(entry: LiveConnection): entry is ConnectedConnection {
+  return entry.state === 'connected' && entry.client !== undefined;
 }
 
 /** Lower-cased names of the options set in a connection string's query. */

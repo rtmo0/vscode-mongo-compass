@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { once } from 'events';
 import { EJSON, ObjectId, Double, Int32, Long, Decimal128, Binary, type Document } from 'bson';
 import type { DataService } from './dataService';
 import { Namespace } from './dataService';
@@ -8,7 +9,6 @@ import { getConfig } from './config';
 import { logger } from './logger';
 
 export type ExportFormat = 'json' | 'jsonl' | 'csv';
-export type ImportFormat = 'json' | 'jsonl' | 'csv';
 
 export interface ExportOptions {
   format: ExportFormat;
@@ -20,22 +20,12 @@ export interface ExportOptions {
   flatten?: boolean;
   /** Explicit field list; empty = all fields. */
   fields?: string[];
-  /** Export as relaxed EJSON (plain JSON types) instead of canonical. */
+  /**
+   * Export as relaxed EJSON (plain JSON numbers) instead of canonical. Relaxed
+   * output does not round-trip: Int64/Double types are lost and Int64 values
+   * beyond 2^53 lose precision, so canonical is the default.
+   */
   relaxed?: boolean;
-  batchSize?: number;
-}
-
-export interface ImportOptions {
-  format: ImportFormat;
-  /** Insert or upsert on `_id`. */
-  mode: 'insert' | 'upsert';
-  /** Stop on the first malformed row. */
-  stopOnError: boolean;
-  /** Treat CSV header row as field names. */
-  headerRow?: boolean;
-  delimiter?: string;
-  /** Parse CSV values that look like numbers/booleans/dates. */
-  inferTypes?: boolean;
   batchSize?: number;
 }
 
@@ -45,8 +35,8 @@ export interface TransferProgress {
 }
 
 /**
- * Import/Export feature — the equivalent of Compass' `compass-import-export`
- * package. Supports JSON, JSON Lines and CSV in both directions.
+ * Export feature — the export half of Compass' `compass-import-export`
+ * package. Writes JSON, JSON Lines and CSV. Imports go through mongorestore.
  */
 export class ImportExportService {
   constructor(private readonly dataService: DataService) {}
@@ -68,27 +58,27 @@ export class ImportExportService {
       ? null
       : await collection.countDocuments(options.filter ?? {}).catch(() => null);
 
+    // CSV writes plain values; JSON keeps the numeric BSON types (see `relaxed`).
+    const cursorOptions = { promoteValues: options.format === 'csv' };
     const cursor = options.pipeline
-      ? collection.aggregate(options.pipeline).batchSize(batchSize)
-      : collection.find(options.filter ?? {}).batchSize(batchSize);
+      ? collection.aggregate(options.pipeline, cursorOptions).batchSize(batchSize)
+      : collection.find(options.filter ?? {}, cursorOptions).batchSize(batchSize);
 
     await fs.promises.mkdir(path.dirname(targetFile), { recursive: true });
 
     let exported = 0;
-    const writeStream = fs.createWriteStream(targetFile, { encoding: 'utf8' });
+    const writer = new FileWriter(targetFile);
 
     try {
       if (options.format === 'csv') {
-        exported = await this.exportCsv(cursor, writeStream, options, total, onProgress, token);
+        exported = await this.exportCsv(cursor, writer, options, total, onProgress, token);
       } else if (options.format === 'jsonl') {
-        exported = await this.exportJsonLines(cursor, writeStream, options, total, onProgress, token);
+        exported = await this.exportJsonLines(cursor, writer, options, total, onProgress, token);
       } else {
-        exported = await this.exportJson(cursor, writeStream, options, total, onProgress, token);
+        exported = await this.exportJson(cursor, writer, options, total, onProgress, token);
       }
     } finally {
-      await new Promise<void>((resolve, reject) => {
-        writeStream.end((err?: Error | null) => (err ? reject(err) : resolve()));
-      });
+      await writer.close();
     }
 
     logger.info('Export finished', { ns: ns.toString(), exported, file: targetFile });
@@ -97,31 +87,31 @@ export class ImportExportService {
 
   private async exportJson(
     cursor: AsyncIterable<Document>,
-    stream: fs.WriteStream,
+    writer: FileWriter,
     options: ExportOptions,
     total: number | null,
     onProgress?: (p: TransferProgress) => void,
     token?: vscode.CancellationToken
   ): Promise<number> {
-    stream.write('[\n');
+    await writer.write('[\n');
     let count = 0;
     for await (const doc of cursor) {
       if (token?.isCancellationRequested) {
         break;
       }
       const projected = projectDocument(doc, options);
-      const text = EJSON.stringify(projected, undefined, 2, { relaxed: options.relaxed ?? true });
-      stream.write(count === 0 ? text : `,\n${text}`);
+      const text = EJSON.stringify(projected, undefined, 2, { relaxed: options.relaxed ?? false });
+      await writer.write(count === 0 ? text : `,\n${text}`);
       count += 1;
       onProgress?.({ processed: count, total });
     }
-    stream.write('\n]\n');
+    await writer.write('\n]\n');
     return count;
   }
 
   private async exportJsonLines(
     cursor: AsyncIterable<Document>,
-    stream: fs.WriteStream,
+    writer: FileWriter,
     options: ExportOptions,
     total: number | null,
     onProgress?: (p: TransferProgress) => void,
@@ -133,7 +123,7 @@ export class ImportExportService {
         break;
       }
       const projected = projectDocument(doc, options);
-      stream.write(`${EJSON.stringify(projected, { relaxed: options.relaxed ?? true })}\n`);
+      await writer.write(`${EJSON.stringify(projected, { relaxed: options.relaxed ?? false })}\n`);
       count += 1;
       onProgress?.({ processed: count, total });
     }
@@ -142,7 +132,7 @@ export class ImportExportService {
 
   private async exportCsv(
     cursor: AsyncIterable<Document>,
-    stream: fs.WriteStream,
+    writer: FileWriter,
     options: ExportOptions,
     total: number | null,
     onProgress?: (p: TransferProgress) => void,
@@ -178,103 +168,52 @@ export class ImportExportService {
       return 0;
     }
 
-    stream.write(`${headers.map(csvEscape).join(',')}\n`);
+    await writer.write(`${headers.map(csvEscape).join(',')}\n`);
     for (const row of buffered) {
       const line = headers.map((h) => csvEscape(formatCsvValue(row[h]))).join(',');
-      stream.write(`${line}\n`);
+      await writer.write(`${line}\n`);
     }
     return buffered.length;
   }
+}
 
-  // ───────────────────────────── import ─────────────────────────────
+/**
+ * Appends text to a file, waiting for the disk whenever the stream's buffer
+ * is full, so a cursor that is faster than the disk cannot fill up memory.
+ */
+class FileWriter {
+  private readonly stream: fs.WriteStream;
+  private error: Error | undefined;
 
-  async importFile(
-    ns: Namespace,
-    sourceFile: string,
-    options: ImportOptions,
-    onProgress?: (p: TransferProgress) => void,
-    token?: vscode.CancellationToken
-  ): Promise<{ imported: number; errors: string[] }> {
-    const config = getConfig();
-    const batchSize = options.batchSize ?? config.exportBatchSize;
-    const content = await fs.promises.readFile(sourceFile, 'utf8');
+  constructor(file: string) {
+    this.stream = fs.createWriteStream(file, { encoding: 'utf8' });
+    // Keep the error for the next write instead of crashing on an unhandled 'error' event.
+    this.stream.on('error', (err) => {
+      this.error = err;
+    });
+  }
 
-    let documents: Document[];
-    const errors: string[] = [];
-
-    if (options.format === 'csv') {
-      const parsed = parseCsv(content, {
-        delimiter: options.delimiter ?? ',',
-        headerRow: options.headerRow ?? true,
-        inferTypes: options.inferTypes ?? true
-      });
-      documents = parsed.rows;
-      errors.push(...parsed.errors);
-    } else if (options.format === 'jsonl') {
-      documents = [];
-      const lines = content.split(/\r?\n/);
-      for (let i = 0; i < lines.length; i += 1) {
-        const line = lines[i].trim();
-        if (!line) {
-          continue;
-        }
-        try {
-          documents.push(EJSON.parse(line, { relaxed: false }) as Document);
-        } catch (err) {
-          errors.push(`Line ${i + 1}: ${(err as Error).message}`);
-          if (options.stopOnError) {
-            break;
-          }
-        }
-      }
-    } else {
-      try {
-        const parsed = EJSON.parse(content, { relaxed: false });
-        documents = Array.isArray(parsed) ? (parsed as Document[]) : [parsed as Document];
-      } catch (err) {
-        throw new Error(`Could not parse JSON file: ${(err as Error).message}`);
-      }
+  async write(chunk: string): Promise<void> {
+    if (this.error) {
+      throw this.error;
     }
-
-    const total = documents.length;
-    let imported = 0;
-    const collection = this.dataService.collection(ns);
-
-    for (let i = 0; i < documents.length; i += batchSize) {
-      if (token?.isCancellationRequested) {
-        break;
-      }
-      const batch = documents.slice(i, i + batchSize);
-      const operations = batch.map((doc) => {
-        if (options.mode === 'upsert' && doc._id !== undefined) {
-          return {
-            updateOne: {
-              filter: { _id: doc._id },
-              update: { $set: doc },
-              upsert: true
-            }
-          };
-        }
-        return { insertOne: { document: doc } };
-      });
-
-      try {
-        const result = await collection.bulkWrite(operations as never, { ordered: options.stopOnError });
-        imported +=
-          (result.insertedCount ?? 0) +
-          (result.upsertedCount ?? 0) +
-          (result.modifiedCount ?? 0);
-      } catch (err) {
-        errors.push(`Batch ${Math.floor(i / batchSize) + 1}: ${(err as Error).message}`);
-        if (options.stopOnError) {
-          break;
-        }
-      }
-      onProgress?.({ processed: Math.min(i + batchSize, total), total });
+    if (!this.stream.write(chunk)) {
+      await once(this.stream, 'drain');
     }
+  }
 
-    logger.info('Import finished', { ns: ns.toString(), imported, errors: errors.length });
-    return { imported, errors };
+  close(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.stream.end((err?: Error | null) => {
+        // The stream's own error explains a failure better than end()'s follow-up error.
+        const failure = this.error ?? err;
+        if (failure) {
+          reject(failure);
+        } else {
+          resolve();
+        }
+      });
+    });
   }
 }
 
@@ -355,150 +294,4 @@ function csvEscape(value: string): string {
     return `"${value.replace(/"/g, '""')}"`;
   }
   return value;
-}
-
-interface CsvParseResult {
-  rows: Document[];
-  errors: string[];
-}
-
-function parseCsv(
-  content: string,
-  options: { delimiter: string; headerRow: boolean; inferTypes: boolean }
-): CsvParseResult {
-  const rows: Document[] = [];
-  const errors: string[] = [];
-  const records = splitCsvRecords(content, options.delimiter);
-  if (records.length === 0) {
-    return { rows, errors };
-  }
-
-  let headers: string[];
-  let dataStart = 0;
-  if (options.headerRow) {
-    headers = records[0];
-    dataStart = 1;
-  } else {
-    headers = records[0].map((_, i) => `field${i + 1}`);
-  }
-
-  for (let r = dataStart; r < records.length; r += 1) {
-    const record = records[r];
-    if (record.length === 1 && record[0].trim() === '') {
-      continue;
-    }
-    const doc: Document = {};
-    for (let c = 0; c < headers.length; c += 1) {
-      const raw = record[c] ?? '';
-      doc[headers[c]] = options.inferTypes ? inferCsvValue(raw) : raw;
-    }
-    rows.push(doc);
-  }
-
-  return { rows, errors };
-}
-
-function splitCsvRecords(content: string, delimiter: string): string[][] {
-  const records: string[][] = [];
-  let current: string[] = [];
-  let field = '';
-  let inQuotes = false;
-  let i = 0;
-
-  while (i < content.length) {
-    const char = content[i];
-    if (inQuotes) {
-      if (char === '"') {
-        if (content[i + 1] === '"') {
-          field += '"';
-          i += 2;
-          continue;
-        }
-        inQuotes = false;
-        i += 1;
-        continue;
-      }
-      field += char;
-      i += 1;
-      continue;
-    }
-
-    if (char === '"') {
-      inQuotes = true;
-      i += 1;
-      continue;
-    }
-    if (char === delimiter) {
-      current.push(field);
-      field = '';
-      i += 1;
-      continue;
-    }
-    if (char === '\n') {
-      current.push(field);
-      records.push(current);
-      current = [];
-      field = '';
-      i += 1;
-      continue;
-    }
-    if (char === '\r') {
-      i += 1;
-      continue;
-    }
-    field += char;
-    i += 1;
-  }
-
-  if (field.length > 0 || current.length > 0) {
-    current.push(field);
-    records.push(current);
-  }
-  return records;
-}
-
-function inferCsvValue(raw: string): unknown {
-  const trimmed = raw.trim();
-  if (trimmed === '') {
-    return null;
-  }
-  if (trimmed === 'true') {
-    return true;
-  }
-  if (trimmed === 'false') {
-    return false;
-  }
-  if (trimmed === 'null') {
-    return null;
-  }
-  // ObjectId hex
-  if (/^[0-9a-fA-F]{24}$/.test(trimmed)) {
-    return new ObjectId(trimmed);
-  }
-  // ISO date
-  if (/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(trimmed)) {
-    const date = new Date(trimmed);
-    if (!Number.isNaN(date.getTime())) {
-      return date;
-    }
-  }
-  // Number
-  if (/^-?\d+$/.test(trimmed)) {
-    const num = Number(trimmed);
-    if (Number.isSafeInteger(num)) {
-      return num;
-    }
-  }
-  if (/^-?\d*\.\d+$/.test(trimmed)) {
-    return Number(trimmed);
-  }
-  // Embedded JSON
-  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-    try {
-      return EJSON.parse(trimmed, { relaxed: true });
-    } catch {
-      return raw;
-    }
-  }
-  return raw;
 }
