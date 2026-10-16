@@ -1,5 +1,7 @@
 # MongoDB Compass for VS Code
 
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/rtmo0)
+
 An independent MongoDB GUI for VS Code: connections, document browsing with a query bar, CRUD, an aggregation pipeline editor and visual stage builder with `$lookup` / `$graphLookup` forms, context-aware autocomplete, index management, schema analysis, explain plans, validation rules, import/export, server stats and query history.
 
 It also deploys and operates MongoDB: create standalone servers, replica sets and sharded clusters on **Docker**, as **local processes**, on **Kubernetes** (Percona Operator, MongoDB Community operator or a plain StatefulSet) or in **MongoDB Atlas**; see the cluster topology; add and remove members, shards and routers; change the primary; shard collections; and run rolling restarts and upgrades — with safety checks before every topology change.
@@ -255,6 +257,8 @@ Install the resulting file with **Extensions: Install from VSIX...** before publ
 ## Support
 
 Report defects through the repository issue tracker. Include the extension version, VS Code version, MongoDB server version and relevant output from **MongoDB: Show Output Channel**. Do not include credentials or unredacted connection strings.
+
+If the extension saves you time, you can support its development on [Buy Me a Coffee](https://buymeacoffee.com/rtmo0).
 
 ## Notes & limitations
 

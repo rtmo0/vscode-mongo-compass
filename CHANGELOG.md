@@ -2,6 +2,12 @@
 
 All notable changes to this extension are documented in this file.
 
+## 1.3.0 - 2026-10-16
+
+### Added
+
+- A **Sponsor** button (Buy Me a Coffee) on the extension page in VS Code and the Marketplace, and a link in the README Support section.
+
 ## 1.2.0 - 2026-10-16
 
 ### Added

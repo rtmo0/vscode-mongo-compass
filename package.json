@@ -2,7 +2,7 @@
   "name": "mongo-compass",
   "displayName": "MongoDB Explorer & Compass Tools",
   "description": "Explore MongoDB, edit documents, build aggregation pipelines, manage indexes and schemas — and deploy and operate replica sets and sharded clusters on Docker, local processes, Kubernetes or Atlas without leaving VS Code.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "samarin-aa-aka-rtm00",
   "icon": "resources/mongodb.png",
   "license": "SEE LICENSE IN LICENSE",
@@ -18,6 +18,9 @@
   "homepage": "https://github.com/rtmo0/vscode-mongo-compass#readme",
   "bugs": {
     "url": "https://github.com/rtmo0/vscode-mongo-compass/issues"
+  },
+  "sponsor": {
+    "url": "https://buymeacoffee.com/rtmo0"
   },
   "qna": "https://github.com/rtmo0/vscode-mongo-compass/discussions",
   "engines": {
