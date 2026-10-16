@@ -21,6 +21,30 @@ import { analyzeDocuments } from './schemaAnalyzer';
 import { summarizeExplain } from './explainHelper';
 import type { ExplainSummary } from './types';
 
+export interface CollectionSizes {
+  count: number;
+  size: number;
+  storageSize: number;
+  avgObjSize: number;
+  nindexes: number;
+  totalIndexSize: number;
+  indexSizes: Record<string, number>;
+}
+
+/** `fn` over `items`, at most `limit` at a time, results in input order. */
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 export interface ExecutionOptions {
   maxTimeMS?: number;
   signal?: AbortSignal;
@@ -76,22 +100,24 @@ export class DataService {
     return this.client.db(database).command(command);
   }
 
-  async serverStatus(): Promise<Document> {
+  /** `sections` turns sections on or off, e.g. `{ metrics: 0 }` to skip the largest one. */
+  async serverStatus(sections: Document = {}): Promise<Document> {
     try {
-      return await this.client.db('admin').command({ serverStatus: 1 });
+      return await this.client.db('admin').command({ serverStatus: 1, ...sections });
     } catch (err) {
       logger.warn('serverStatus failed', { error: (err as Error).message });
       throw err;
     }
   }
 
-  async currentOp(): Promise<Document> {
+  /** `truncateOps` shortens commands over 1 KB, e.g. bulk inserts, for frequent sampling. */
+  async currentOp(options: { truncateOps?: boolean } = {}): Promise<Document> {
     const inprog = await this.client.db('admin').aggregate([
       {
         $currentOp: {
           allUsers: true,
           idleConnections: false,
-          truncateOps: false
+          truncateOps: options.truncateOps ?? false
         }
       }
     ]).toArray();
@@ -145,6 +171,51 @@ export class DataService {
 
   async collectionStats(database: string, collection: string): Promise<Document> {
     return this.client.db(database).command({ collStats: collection });
+  }
+
+  /**
+   * Counts and sizes of a collection, without the storage engine and per-index
+   * details of `collStats` (tens of KB per collection) — the server drops them.
+   * The shards of a sharded collection are added up.
+   */
+  async collectionSizes(database: string, collection: string): Promise<CollectionSizes> {
+    let rows: Document[];
+    try {
+      rows = await this.client
+        .db(database)
+        .collection(collection)
+        .aggregate([
+          { $collStats: { storageStats: {} } },
+          {
+            $project: {
+              _id: 0,
+              count: '$storageStats.count',
+              size: '$storageStats.size',
+              storageSize: '$storageStats.storageSize',
+              nindexes: '$storageStats.nindexes',
+              totalIndexSize: '$storageStats.totalIndexSize',
+              indexSizes: '$storageStats.indexSizes'
+            }
+          }
+        ])
+        .toArray();
+    } catch {
+      // Servers without $collStats (e.g. some managed or emulated ones).
+      rows = [await this.collectionStats(database, collection)];
+    }
+    const sizes: CollectionSizes = { count: 0, size: 0, storageSize: 0, avgObjSize: 0, nindexes: 0, totalIndexSize: 0, indexSizes: {} };
+    for (const row of rows) {
+      sizes.count += Number(row.count ?? 0);
+      sizes.size += Number(row.size ?? 0);
+      sizes.storageSize += Number(row.storageSize ?? 0);
+      sizes.totalIndexSize += Number(row.totalIndexSize ?? 0);
+      sizes.nindexes = Math.max(sizes.nindexes, Number(row.nindexes ?? 0));
+      for (const [name, bytes] of Object.entries((row.indexSizes ?? {}) as Record<string, number>)) {
+        sizes.indexSizes[name] = (sizes.indexSizes[name] ?? 0) + Number(bytes);
+      }
+    }
+    sizes.avgObjSize = sizes.count > 0 ? sizes.size / sizes.count : 0;
+    return sizes;
   }
 
   async collectionInfo(database: string, collection: string): Promise<CollectionInfo | undefined> {

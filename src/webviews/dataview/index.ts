@@ -90,7 +90,9 @@ interface CollectionActivityRow {
   writePercent: number;
 }
 
-let performanceTimer: ReturnType<typeof setInterval> | undefined;
+let performanceTimer: ReturnType<typeof setTimeout> | undefined;
+/** Bumped on stop, so a sample still in flight does not schedule the next one. */
+let performanceLoop = 0;
 let performancePaused = false;
 let previousPerformanceSample: PerformanceSampleData | undefined;
 let performanceHistory: PerformancePoint[] = [];
@@ -866,13 +868,25 @@ function renderStats(): HTMLElement {
   }
 
   wrap.append(el('div', { className: 'mc-section-title', text: 'Raw stats' }));
-  const details = el('details');
-  const pre = el('pre', { className: 'mc-mono' });
-  pre.innerHTML = highlightJson(data);
-  details.append(el('summary', { text: 'Show raw JSON' }), pre);
-  wrap.append(details);
+  wrap.append(rawJsonDetails(data));
 
   return wrap;
+}
+
+/**
+ * Collapsed raw JSON, highlighted when first opened: serverStatus and
+ * collStats run to hundreds of KB and would otherwise slow every render.
+ */
+function rawJsonDetails(value: unknown): HTMLElement {
+  const details = el('details');
+  const pre = el('pre', { className: 'mc-mono' });
+  details.append(el('summary', { text: 'Show raw JSON' }), pre);
+  details.addEventListener('toggle', () => {
+    if (details.open && !pre.hasChildNodes()) {
+      pre.innerHTML = highlightJson(value);
+    }
+  });
+  return details;
 }
 
 function formatBytes(bytes: number | undefined): string {
@@ -958,11 +972,7 @@ function renderServerStatus(): HTMLElement {
   wrap.append(operations);
 
   wrap.append(el('div', { className: 'mc-section-title', text: 'Raw serverStatus' }));
-  const details = el('details');
-  const pre = el('pre', { className: 'mc-mono' });
-  pre.innerHTML = highlightJson(status);
-  details.append(el('summary', { text: 'Show raw JSON' }), pre);
-  wrap.append(details);
+  wrap.append(rawJsonDetails(status));
 
   return wrap;
 }
@@ -971,11 +981,28 @@ function renderServerStatus(): HTMLElement {
 
 function startPerformancePolling(): void {
   if (performanceTimer) return;
-  performanceTimer = setInterval(() => void pollPerformanceSample(), 1000);
+  schedulePerformanceSample(++performanceLoop);
+}
+
+/**
+ * Sample one second after the previous sample finished, so a slow server never
+ * gets overlapping requests. A hidden panel keeps running
+ * (retainContextWhenHidden) but skips the round trip until it is visible.
+ */
+function schedulePerformanceSample(loop: number): void {
+  performanceTimer = setTimeout(async () => {
+    if (!document.hidden) {
+      await pollPerformanceSample();
+    }
+    if (loop === performanceLoop) {
+      schedulePerformanceSample(loop);
+    }
+  }, 1000);
 }
 
 function stopPerformancePolling(): void {
-  if (performanceTimer) clearInterval(performanceTimer);
+  performanceLoop += 1;
+  if (performanceTimer) clearTimeout(performanceTimer);
   performanceTimer = undefined;
 }
 

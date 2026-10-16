@@ -5,6 +5,7 @@ import type { Document } from 'bson';
 
 import { ConnectionStore } from './core/connectionStore';
 import { ConnectionManager } from './core/connectionManager';
+import { OidcAuth, usesHumanOidc } from './core/oidc';
 import { QueryHistoryStore } from './core/queryHistory';
 import { MyQueriesStore } from './core/myQueries';
 import { DataService, Namespace } from './core/dataService';
@@ -37,12 +38,13 @@ import { DocumentsPanel } from './webviews/documentsPanel';
 import { AggregationPanel } from './webviews/aggregationPanel';
 import { DataPanel } from './webviews/dataPanel';
 
-import { promptForConnection, promptForUri } from './commands/connectionForm';
+import { promptForConnection, promptForUri, promptOidcTrust } from './commands/connectionForm';
 import { findMongoTool, openMongosh, runMongoTool } from './commands/mongoTools';
 import { connectionStringForDatabase, deriveConnectionName } from './core/connectionString';
 
 interface Services {
   connectionManager: ConnectionManager;
+  oidc: OidcAuth;
   history: QueryHistoryStore;
   myQueries: MyQueriesStore;
   explorer: MongoExplorerProvider;
@@ -55,6 +57,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const store = new ConnectionStore(context, context.secrets);
   const connectionManager = new ConnectionManager(store);
+  const oidc = new OidcAuth(context.secrets, path.join(context.extensionPath, 'dist'));
+  connectionManager.setAuthProvider(oidc);
+  context.subscriptions.push(oidc);
   const history = new QueryHistoryStore(context);
   const myQueries = new MyQueriesStore(context);
 
@@ -63,7 +68,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const explorer = new MongoExplorerProvider(connectionManager);
   const tools = new MongoToolsProvider();
 
-  services = { connectionManager, history, myQueries, explorer };
+  services = { connectionManager, oidc, history, myQueries, explorer };
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('mongoCompass.explorer', explorer),
@@ -104,7 +109,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     deploymentsTree,
     deploymentsView,
     vscode.window.registerTreeDataProvider('mongoCompass.cluster', clusterTree),
-    monitor.onDidUpdate(() => clusterTree.refresh())
+    // Reload the topology only when a check saw a change, not on every tick: the
+    // overview of a sharded cluster reads every shard and the chunk counts.
+    monitor.onDidUpdate((changed) => changed.forEach((id) => clusterTree.refresh(id)))
   );
   registerClusterCommands(context, { extensionUri: context.extensionUri, connectionManager, cluster, nodes, tree: clusterTree, monitor });
   registerDeploymentCommands(context, { connectionManager, cluster, registry, tree: deploymentsTree, refreshExplorer: () => explorer.refresh() });
@@ -246,11 +253,16 @@ function registerConnectionCommands(context: vscode.ExtensionContext, s: Service
       if (!uri) {
         return;
       }
+      const oidcTrustedEndpoint = await promptOidcTrust(uri);
+      if (oidcTrustedEndpoint === null) {
+        return;
+      }
       const name = deriveNameFromUri(uri);
       const options: ConnectionOptions = {
         id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         name,
-        connectionString: uri.trim()
+        connectionString: uri.trim(),
+        oidcTrustedEndpoint
       };
       await connectionManager.addOrUpdate(options);
       explorer.refresh();
@@ -312,6 +324,30 @@ function registerConnectionCommands(context: vscode.ExtensionContext, s: Service
       explorer.refresh();
     }),
 
+    vscode.commands.registerCommand('mongoCompass.forgetOidcSignIn', async (arg?: ConnectionNode) => {
+      let options = arg?.connection.options;
+      if (!options) {
+        const candidates = (await connectionManager.listOptions()).filter((o) => usesHumanOidc(o.connectionString));
+        if (candidates.length === 0) {
+          void vscode.window.showInformationMessage('No connection uses OIDC sign-in.');
+          return;
+        }
+        const picked = await vscode.window.showQuickPick(
+          candidates.map((o) => ({ label: o.name, description: redactUri(o.connectionString), connection: o })),
+          { placeHolder: 'Forget the OIDC sign-in of which connection?' }
+        );
+        options = picked?.connection;
+      }
+      if (!options) {
+        return;
+      }
+      // Disconnect first: an open client would sign in again with its cached token.
+      await connectionManager.disconnect(options.id);
+      await s.oidc.forget(options.id);
+      explorer.refresh();
+      void vscode.window.showInformationMessage(`"${options.name}" will ask you to sign in on the next connect.`);
+    }),
+
     vscode.commands.registerCommand('mongoCompass.removeConnection', async (arg?: ConnectionNode) => {
       const id = arg?.connection.options.id;
       const options = id
@@ -344,25 +380,45 @@ async function connectWithProgress(
   id: string,
   explorer: MongoExplorerProvider
 ): Promise<void> {
-  const name = connectionManager.get(id)?.options.name ?? id;
+  const options = connectionManager.get(id)?.options;
+  const name = options?.name ?? id;
+  const oidc = options ? usesHumanOidc(options.connectionString) : false;
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
       title: `Connecting to ${name}…`,
-      cancellable: false
+      cancellable: true
     },
-    async () => {
+    async (progress, token) => {
+      if (oidc) {
+        progress.report({ message: 'sign in with your identity provider if the browser asks' });
+      }
+      let cancel: vscode.Disposable | undefined;
+      const cancelled = new Promise<undefined>((resolve) => {
+        cancel = token.onCancellationRequested(() => {
+          // Disconnecting aborts the attempt, including an OIDC sign-in still waiting for the browser.
+          void connectionManager.disconnect(id);
+          resolve(undefined);
+        });
+      });
       try {
-        const connection = await connectionManager.connect(id);
+        const connection = await Promise.race([connectionManager.connect(id), cancelled]);
         explorer.refresh();
-        void vscode.window.showInformationMessage(
-          `Connected to ${connection.options.name} (v${connection.topology?.serverVersion ?? 'unknown'})`
-        );
+        if (connection) {
+          void vscode.window.showInformationMessage(
+            `Connected to ${connection.options.name} (v${connection.topology?.serverVersion ?? 'unknown'})`
+          );
+        }
       } catch (err) {
         explorer.refresh();
+        if (token.isCancellationRequested) {
+          return;
+        }
         const message = (err as Error).message;
         logger.error('Connect failed', { id, error: message });
         void vscode.window.showErrorMessage(`Failed to connect: ${message}`);
+      } finally {
+        cancel?.dispose();
       }
     }
   );

@@ -14,7 +14,8 @@ Built on the official [`mongodb`](https://www.npmjs.com/package/mongodb) Node dr
 - Add / edit / duplicate / remove saved connections
 - Connect with a URI directly
 - Credentials stored securely in the OS keychain via VS Code `SecretStorage`
-- Advanced options: read preference, server selection timeout, notes, color
+- Advanced options: read preference, authentication method, server selection timeout, notes, color
+- **OIDC** sign-in (`authMechanism=MONGODB-OIDC`), as in Compass and mongosh: the identity provider's page opens in your browser, and the tokens are kept in the OS keychain and refreshed, so later sessions don't ask again. Connections to hosts other than Atlas or localhost must be marked as trusted. With `ENVIRONMENT:azure|gcp|k8s` the driver gets a workload token on its own. **MongoDB: Forget OIDC Sign-in** signs out. Needs a VS Code whose extension host runs Node.js 20 or later
 - Options in the connection string (`readPreference`, `directConnection`, `serverSelectionTimeoutMS`, …) are respected; the extension settings only fill in what the URI leaves out
 - Topology detection (standalone / replica set / sharded / Atlas), server version
 - Status bar indicator for the active connection
@@ -173,6 +174,8 @@ Existing clusters work too: connect to them as usual to use the **Cluster** view
 | `mongoCompass.showSystemCollections` | `true` | Show `system.*` collections |
 | `mongoCompass.readPreference` | `primary` | Default read preference |
 | `mongoCompass.connectionTimeoutMS` | `30000` | Server selection timeout |
+| `mongoCompass.oidc.deviceAuthFlow` | `false` | Allow OIDC sign-in with a code on another device (Remote SSH, WSL, containers, Codespaces) |
+| `mongoCompass.oidc.redirectURI` | `""` | Redirect URI registered with the identity provider (default `http://localhost:27097/redirect`) |
 | `mongoCompass.exportBatchSize` | `1000` | Export batch size |
 | `mongoCompass.autoPreviewPipeline` | `true` | Auto re-run aggregation preview |
 | `mongoCompass.cluster.monitorIntervalSeconds` | `30` | Health checks of connected clusters (0 = off) |
@@ -241,6 +244,7 @@ Install the resulting file with **Extensions: Install from VSIX...** before publ
 ## Security and privacy
 
 - Connection strings are stored in VS Code `SecretStorage`, backed by the operating system credential store.
+- OIDC tokens are stored in `SecretStorage` per connection and deleted with the connection, when its connection string changes, or with **Forget OIDC Sign-in**. They are sent only to Atlas, localhost, or the hosts of a connection you marked as trusted.
 - Query history and saved queries are stored locally in VS Code global storage.
 - The extension does not include telemetry or send database contents to an external service.
 - Database queries and commands are sent only to the MongoDB deployment selected by the user.

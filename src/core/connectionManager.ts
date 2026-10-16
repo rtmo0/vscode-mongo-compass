@@ -17,6 +17,16 @@ import { ConnectionStore } from './connectionStore';
 import { getConfig } from './config';
 import { logger } from './logger';
 
+/** Authentication that needs more than the connection string, e.g. OIDC sign-in. */
+export interface ConnectionAuthProvider {
+  /** Extra client options for `uri`: the connection's own URI, or one built from it for a single member. */
+  clientOptions(connection: ConnectionOptions, uri: string): Promise<MongoClientOptions | undefined>;
+  /** The connection was closed: keep what can be reused, abort a sign-in that is still waiting. */
+  release(id: string): Promise<void>;
+  /** The connection was removed or now points elsewhere: drop what was stored for it. */
+  forget(id: string): Promise<void>;
+}
+
 export class ConnectionManager {
   private readonly connections = new Map<string, LiveConnection>();
   /** In-flight connection attempts, shared by every caller of `connect`. */
@@ -28,11 +38,22 @@ export class ConnectionManager {
 
   /** Runs before a connection is opened, e.g. to start a port-forward and refresh its URI. */
   private beforeConnect?: (id: string) => Promise<void>;
+  private authProvider?: ConnectionAuthProvider;
 
   constructor(private readonly store: ConnectionStore) {}
 
   setBeforeConnect(hook: ((id: string) => Promise<void>) | undefined): void {
     this.beforeConnect = hook;
+  }
+
+  setAuthProvider(provider: ConnectionAuthProvider | undefined): void {
+    this.authProvider = provider;
+  }
+
+  /** Client options a connection needs for authentication, for its own URI or one of a member. */
+  async authOptions(id: string, uri: string): Promise<MongoClientOptions> {
+    const entry = this.connections.get(id);
+    return (entry && (await this.authProvider?.clientOptions(entry.options, uri))) ?? {};
   }
 
   get all(): LiveConnection[] {
@@ -67,15 +88,20 @@ export class ConnectionManager {
   }
 
   async addOrUpdate(options: ConnectionOptions): Promise<void> {
+    const previous = this.connections.get(options.id)?.options;
     await this.store.save(options);
     // Also cancels an attempt that is still connecting with the old options.
     await this.disconnect(options.id);
+    if (previous && previous.connectionString !== options.connectionString) {
+      await this.authProvider?.forget(options.id);
+    }
     this.connections.set(options.id, { options, state: 'disconnected' });
     this._onDidChange.fire();
   }
 
   async remove(id: string): Promise<void> {
     await this.disconnect(id);
+    await this.authProvider?.forget(id);
     this.connections.delete(id);
     await this.store.remove(id);
     this._onDidChange.fire();
@@ -151,6 +177,7 @@ export class ConnectionManager {
       } else if (!uriOptions.has('readpreference')) {
         clientOptions.readPreference = config.readPreference as ReadPreferenceMode;
       }
+      Object.assign(clientOptions, await this.authOptions(id, uri));
 
       client = new MongoClient(uri, clientOptions);
 
@@ -215,6 +242,11 @@ export class ConnectionManager {
         logger.warn('Error while closing client', { error: (err as Error).message });
       }
     }
+    try {
+      await this.authProvider?.release(id);
+    } catch (err) {
+      logger.warn('Error while releasing authentication', { error: (err as Error).message });
+    }
   }
 
   async disconnectAll(): Promise<void> {
@@ -260,23 +292,18 @@ function uriOptionNames(uri: string): Set<string> {
 
 async function readTopology(client: MongoClient): Promise<TopologyInfo> {
   const admin = client.db('admin');
-  let buildInfo: Document = {};
-  try {
-    buildInfo = await admin.command({ buildInfo: 1 });
-  } catch (err) {
-    logger.warn('buildInfo failed', { error: (err as Error).message });
-  }
-
-  let hello: Document = {};
-  try {
-    hello = await admin.command({ hello: 1 });
-  } catch {
-    try {
-      hello = await admin.command({ isMaster: 1 });
-    } catch (err) {
-      logger.warn('hello/isMaster failed', { error: (err as Error).message });
-    }
-  }
+  const [buildInfo, hello] = await Promise.all([
+    admin.command({ buildInfo: 1 }).catch((err: Error): Document => {
+      logger.warn('buildInfo failed', { error: err.message });
+      return {};
+    }),
+    admin.command({ hello: 1 }).catch(() =>
+      admin.command({ isMaster: 1 }).catch((err: Error): Document => {
+        logger.warn('hello/isMaster failed', { error: err.message });
+        return {};
+      })
+    )
+  ]);
 
   const version = String(buildInfo.version ?? hello.maxWireVersion ?? 'unknown');
   const modules = (buildInfo.modules ?? []) as string[];

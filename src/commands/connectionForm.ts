@@ -4,6 +4,7 @@ import {
   validateConnectionString,
   redactConnectionString
 } from '../core/connectionString';
+import { oidcNeedsTrust, usesHumanOidc, withOidc } from '../core/oidc';
 
 export { validateConnectionString };
 
@@ -26,7 +27,7 @@ export async function promptForConnection(
     return undefined;
   }
 
-  const connectionString = await vscode.window.showInputBox({
+  let connectionString = await vscode.window.showInputBox({
     title: 'MongoDB Connection — URI',
     prompt: 'Connection string (credentials are stored securely in the OS keychain)',
     value: existing?.connectionString ?? 'mongodb://localhost:27017',
@@ -70,6 +71,21 @@ export async function promptForConnection(
     }
     readPreference = pickedReadPreference.label as ConnectionOptions['readPreference'];
 
+    const oidc = usesHumanOidc(connectionString);
+    const pickedAuth = await vscode.window.showQuickPick(
+      [
+        { label: 'As in the connection string', description: 'username/password, X.509, Kerberos, AWS, …', picked: !oidc, oidc: false },
+        { label: 'OIDC', description: 'sign in with your identity provider in the browser', picked: oidc, oidc: true }
+      ],
+      { title: 'Authentication', placeHolder: oidc ? 'The connection string uses OIDC' : 'Select the authentication method' }
+    );
+    if (pickedAuth === undefined) {
+      return undefined;
+    }
+    if (pickedAuth.oidc && !oidc) {
+      connectionString = withOidc(connectionString);
+    }
+
     const timeoutInput = await vscode.window.showInputBox({
       title: 'Server selection timeout (ms)',
       value: String(existing?.serverSelectionTimeoutMS ?? 30000),
@@ -102,6 +118,11 @@ export async function promptForConnection(
     color = pickedColor.label === '(none)' ? undefined : pickedColor.label;
   }
 
+  const oidcTrustedEndpoint = await promptOidcTrust(connectionString, existing?.oidcTrustedEndpoint);
+  if (oidcTrustedEndpoint === null) {
+    return undefined;
+  }
+
   return {
     id: existing?.id ?? generateId(),
     name: name.trim(),
@@ -111,8 +132,32 @@ export async function promptForConnection(
     notes: notes || undefined,
     color,
     favorite: existing?.favorite,
-    lastUsed: existing?.lastUsed
+    lastUsed: existing?.lastUsed,
+    oidcTrustedEndpoint
   };
+}
+
+/**
+ * OIDC tokens only go to Atlas and localhost unless the user trusts the
+ * hosts of the connection (a server tells the client which identity provider
+ * to use, so an untrusted one could ask for tokens meant for another service).
+ * Returns `undefined` when no question is needed and `null` when cancelled.
+ */
+export async function promptOidcTrust(uri: string, current?: boolean): Promise<boolean | undefined | null> {
+  if (!oidcNeedsTrust(uri)) {
+    return undefined;
+  }
+  const picked = await vscode.window.showQuickPick(
+    [
+      { label: 'Trust this endpoint', description: 'send OIDC tokens to the hosts of this connection', picked: current === true, value: true },
+      { label: 'Do not trust', description: 'only Atlas and localhost receive tokens, so connecting will fail', picked: current === false, value: false }
+    ],
+    {
+      title: 'OIDC — Trusted endpoint',
+      placeHolder: `${redactConnectionString(uri)} is not an Atlas or local host. Trust it with your OIDC tokens?`
+    }
+  );
+  return picked ? picked.value : null;
 }
 
 /** Quick connect: ask only for a URI and create an ad-hoc connection. */

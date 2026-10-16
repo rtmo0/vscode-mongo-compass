@@ -114,7 +114,12 @@ function setAuto(enabled: boolean): void {
     timer = undefined;
   }
   if (enabled) {
-    timer = setInterval(() => void refresh(true), 10_000);
+    // A hidden tab keeps running (retainContextWhenHidden): skip the reload until it is visible.
+    timer = setInterval(() => {
+      if (!document.hidden) {
+        void refresh(true);
+      }
+    }, 10_000);
   }
   persist();
 }

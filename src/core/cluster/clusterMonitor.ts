@@ -30,7 +30,10 @@ export class ClusterMonitor implements vscode.Disposable {
   private readonly summaries = new Map<string, ClusterHealthSummary>();
   private readonly statusItem: vscode.StatusBarItem;
   private readonly disposables: vscode.Disposable[] = [];
-  private readonly _onDidUpdate = new vscode.EventEmitter<void>();
+  /** Per connection: primaries, member states and who lags, to tell whether a check changed anything. */
+  private readonly signatures = new Map<string, string>();
+  /** Fires after a check with the connections whose health changed (empty when none did). */
+  private readonly _onDidUpdate = new vscode.EventEmitter<string[]>();
   readonly onDidUpdate = this._onDidUpdate.event;
 
   constructor(
@@ -56,6 +59,7 @@ export class ClusterMonitor implements vscode.Disposable {
         for (const id of [...this.summaries.keys()]) {
           if (connectionManager.state(id) !== 'connected') {
             this.summaries.delete(id);
+            this.signatures.delete(id);
           }
         }
         this.renderStatus();
@@ -97,6 +101,7 @@ export class ClusterMonitor implements vscode.Disposable {
       const config = vscode.workspace.getConfiguration('mongoCompass.cluster');
       const lagThreshold = config.get<number>('lagWarningSeconds', 30);
       const notify = config.get<boolean>('notifications', true);
+      const changed: string[] = [];
       for (const connection of this.connectionManager.connected) {
         const kind = connection.topology?.topologyType;
         if (kind !== 'replicaSet' && kind !== 'sharded') {
@@ -109,12 +114,27 @@ export class ClusterMonitor implements vscode.Disposable {
             this.inspectSet(connection.options.name, connection.options.id, set, lagThreshold, notify, summary);
           }
           this.summaries.set(connection.options.id, summary);
+          const signature = JSON.stringify(
+            sets.map((set) => [
+              set.name,
+              set.primary,
+              set.error,
+              // Lag as in sync / behind / over the threshold, so the tree's lag text stays right without reloading on every second of drift.
+              set.members.map((m) => [m.host, m.state, m.health, m.lagSeconds === null ? null : m.lagSeconds === 0 ? 0 : m.secondaryDelaySecs === 0 && m.lagSeconds > lagThreshold ? 2 : 1])
+            ])
+          );
+          const previous = this.signatures.get(connection.options.id);
+          this.signatures.set(connection.options.id, signature);
+          // The first check only records the state the views just loaded.
+          if (previous !== undefined && previous !== signature) {
+            changed.push(connection.options.id);
+          }
         } catch (err) {
           logger.warn('Cluster health check failed', { connection: connection.options.name, error: (err as Error).message });
         }
       }
       this.renderStatus();
-      this._onDidUpdate.fire();
+      this._onDidUpdate.fire(changed);
     } finally {
       this.running = false;
     }

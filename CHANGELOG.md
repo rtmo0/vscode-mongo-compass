@@ -2,6 +2,22 @@
 
 All notable changes to this extension are documented in this file.
 
+## 1.2.0 - 2026-10-16
+
+### Added
+
+- OIDC authentication (`authMechanism=MONGODB-OIDC`): sign in with your identity provider in the browser, as in Compass and mongosh. Tokens are kept per connection in the OS keychain and refreshed, member connections of the cluster views reuse them, and hosts other than Atlas or localhost must be marked as trusted. The Device Authorization flow can be enabled for remote windows. **MongoDB: Forget OIDC Sign-in** signs out.
+- The connecting notification can be cancelled; that also stops an OIDC sign-in waiting for the browser.
+
+### Changed
+
+- Statistics, indexes and other data views load once instead of twice, and start querying while the panel is still opening.
+- Database statistics read only the collection sizes (`$collStats` with a server-side projection), a few collections at a time and skipping views: on 300 collections the reply shrinks from about 32 MB to 53 KB.
+- Performance metrics wait for each sample before asking for the next, pause while the tab is hidden, and skip the serverStatus sections they don't show (about half of the reply).
+- Raw JSON of serverStatus and collection stats is rendered when expanded, not with the view.
+- Cluster overview reads the replica set status, config, oplog, shards and config servers in parallel; the Cluster view and the dashboard share one read; the Cluster view reloads only when a health check sees a change instead of every 30 seconds; the dashboard's auto-refresh pauses while hidden; an unreachable member no longer costs a timeout on every refresh.
+- Connecting reads `buildInfo` and `hello` in parallel.
+
 ## 1.1.0 - 2026-10-16
 
 ### Added

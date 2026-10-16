@@ -58,6 +58,16 @@ async function main() {
     logLevel: 'info'
   };
 
+  // OIDC sign-in (plugin + its HTTP stack, ~1 MB) is loaded on demand by
+  // src/core/oidc.ts, so it stays out of the bundle every activation loads.
+  const oidcOptions = {
+    ...extensionOptions,
+    entryPoints: [path.join(__dirname, 'src', 'core', 'oidcPluginBundle.ts')],
+    outfile: path.join(__dirname, 'dist', 'oidc-plugin.js'),
+    // Only required when running inside Electron's main process, never in the extension host.
+    external: ['electron']
+  };
+
   const webviewOptions = {
     entryPoints: collectWebviewEntries(),
     bundle: true,
@@ -76,10 +86,12 @@ async function main() {
   if (watch) {
     const extensionCtx = await esbuild.context(extensionOptions);
     const webviewCtx = await esbuild.context(webviewOptions);
+    await esbuild.build(oidcOptions);
     await Promise.all([extensionCtx.watch(), webviewCtx.watch()]);
     console.log('[esbuild] watching…');
   } else {
     await esbuild.build(extensionOptions);
+    await esbuild.build(oidcOptions);
     if (Object.keys(webviewOptions.entryPoints).length > 0) {
       await esbuild.build(webviewOptions);
     }

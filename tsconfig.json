@@ -22,6 +22,9 @@
     "paths": {
       "mongodb-connection-string-url": [
         "./node_modules/mongodb-connection-string-url/lib/index.d.ts"
+      ],
+      "@mongodb-js/oidc-plugin": [
+        "./node_modules/@mongodb-js/oidc-plugin/dist/index.d.ts"
       ]
     }
   },

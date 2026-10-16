@@ -41,14 +41,16 @@ export abstract class BaseWebviewPanel implements vscode.Disposable {
    * state used by the abstract getters (`panelKey`, `title`, `webviewName`)
    * has been initialised — abstract members cannot be accessed from the
    * base-class constructor.
+   *
+   * Returns false when an open panel with the same key was revealed instead.
    */
-  protected initializePanel(viewColumn: vscode.ViewColumn, preserveFocus = false): void {
+  protected initializePanel(viewColumn: vscode.ViewColumn, preserveFocus = false): boolean {
     const existing = BaseWebviewPanel.openPanels.get(this.panelKey);
     if (existing && !existing.disposed) {
       existing.panel.reveal(viewColumn, preserveFocus);
       this.panel = existing.panel;
       this.onPanelReused();
-      return;
+      return false;
     }
 
     this.panel = vscode.window.createWebviewPanel(
@@ -74,6 +76,7 @@ export abstract class BaseWebviewPanel implements vscode.Disposable {
       this.disposables
     );
     this.panel.onDidDispose(() => this.onDispose(), undefined, this.disposables);
+    return true;
   }
 
   /** Called when an existing panel was revealed instead of creating a new one. */

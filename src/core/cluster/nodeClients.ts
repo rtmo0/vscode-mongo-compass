@@ -65,6 +65,8 @@ export function connectionStringForHosts(baseUri: string, hosts: string[], direc
  */
 export class NodeClientPool implements vscode.Disposable {
   private readonly clients = new Map<string, Promise<MongoClient>>();
+  /** `connectionId|sorted hosts` → the member of that set that last answered `anyMember`. */
+  private readonly lastReachable = new Map<string, string>();
   private readonly resolvers = new Set<HostResolver>();
   private readonly credentialResolvers = new Set<CredentialResolver>();
   private readonly subscription: vscode.Disposable;
@@ -135,13 +137,21 @@ export class NodeClientPool implements vscode.Disposable {
     return pending;
   }
 
-  /** The first member of `hosts` that answers, for commands any member can serve. */
+  /**
+   * The first member of `hosts` that answers, for commands any member can serve.
+   * The member that answered last time is tried first, so an unreachable host
+   * early in the list does not cost a connect timeout on every call.
+   */
   async anyMember(connectionId: string, hosts: string[]): Promise<{ host: string; client: MongoClient }> {
+    const key = `${connectionId}|${[...hosts].sort().join(',')}`;
+    const preferred = this.lastReachable.get(key);
+    const ordered = preferred && hosts.includes(preferred) ? [preferred, ...hosts.filter((h) => h !== preferred)] : hosts;
     const errors: string[] = [];
-    for (const host of hosts) {
+    for (const host of ordered) {
       try {
         const client = await this.direct(connectionId, host);
         await client.db('admin').command({ ping: 1 });
+        this.lastReachable.set(key, host);
         return { host, client };
       } catch (err) {
         errors.push(`${host}: ${(err as Error).message}`);
@@ -176,13 +186,20 @@ export class NodeClientPool implements vscode.Disposable {
       const cs = new ConnectionString(uri);
       cs.username = encodeURIComponent(credentials.username);
       cs.password = encodeURIComponent(credentials.password);
+      // A shard-local user signs in with a password, whatever the connection itself uses.
+      for (const key of [...cs.searchParams.keys()]) {
+        if (/^authmechanism(properties)?$/i.test(key)) {
+          cs.searchParams.delete(key);
+        }
+      }
       cs.searchParams.set('authSource', 'admin');
       uri = cs.toString();
     }
     const client = new MongoClient(uri, {
       appName: 'MongoDB Compass for VS Code (cluster)',
       serverSelectionTimeoutMS: 5000,
-      connectTimeoutMS: 5000
+      connectTimeoutMS: 5000,
+      ...(credentials ? {} : await this.connectionManager.authOptions(connectionId, uri))
     });
     try {
       await client.connect();

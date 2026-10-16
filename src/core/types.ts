@@ -15,6 +15,11 @@ export interface ConnectionOptions {
   color?: string;
   lastUsed?: number;
   favorite?: boolean;
+  /**
+   * OIDC: send tokens to the hosts of this connection even though they are not
+   * on the driver's built-in list (Atlas, localhost). The user confirmed it.
+   */
+  oidcTrustedEndpoint?: boolean;
 }
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';

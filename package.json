@@ -2,7 +2,7 @@
   "name": "mongo-compass",
   "displayName": "MongoDB Explorer & Compass Tools",
   "description": "Explore MongoDB, edit documents, build aggregation pipelines, manage indexes and schemas — and deploy and operate replica sets and sharded clusters on Docker, local processes, Kubernetes or Atlas without leaving VS Code.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "samarin-aa-aka-rtm00",
   "icon": "resources/mongodb.png",
   "license": "SEE LICENSE IN LICENSE",
@@ -148,6 +148,12 @@
         "title": "Remove Connection",
         "category": "MongoDB",
         "icon": "$(trash)"
+      },
+      {
+        "command": "mongoCompass.forgetOidcSignIn",
+        "title": "Forget OIDC Sign-in",
+        "category": "MongoDB",
+        "icon": "$(sign-out)"
       },
       {
         "command": "mongoCompass.duplicateConnection",
@@ -1584,6 +1590,16 @@
           "default": 30000,
           "description": "Server selection timeout used when connecting."
         },
+        "mongoCompass.oidc.deviceAuthFlow": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the OIDC Device Authorization flow: sign in on any device with a code when the browser cannot reach VS Code (Remote SSH, WSL, containers, Codespaces)."
+        },
+        "mongoCompass.oidc.redirectURI": {
+          "type": "string",
+          "default": "",
+          "description": "Local redirect URI for the OIDC Authorization Code flow. It must match the redirect URI registered with your identity provider. Empty uses the MongoDB default, http://localhost:27097/redirect."
+        },
         "mongoCompass.exportBatchSize": {
           "type": "number",
           "default": 1000,
@@ -1668,6 +1684,7 @@
     "lint": "tsc -p ./ --noEmit"
   },
   "dependencies": {
+    "@mongodb-js/oidc-plugin": "^2.2.0",
     "acorn": "^8.15.0",
     "bson": "^6.10.1",
     "mongodb": "^6.12.0",

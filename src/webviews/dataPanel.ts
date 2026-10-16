@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { EJSON, type Document } from 'bson';
 import { BaseWebviewPanel } from './baseWebview';
-import { DataService, Namespace } from '../core/dataService';
+import { DataService, Namespace, mapLimit } from '../core/dataService';
 import type { ConnectionManager } from '../core/connectionManager';
 import type { QueryHistoryStore } from '../core/queryHistory';
 import type { MyQueriesStore } from '../core/myQueries';
@@ -10,6 +10,28 @@ import { hostSummary } from '../core/connectionString';
 import { getConfig } from '../core/config';
 import { logger } from '../core/logger';
 import type { ViewKind } from '../core/types';
+
+/** Collections whose sizes the database statistics view reads at the same time. */
+const STATS_CONCURRENCY = 8;
+
+/**
+ * serverStatus sections the live metrics never show, skipped because the view
+ * samples every second and `wiredTiger` alone is about half of the reply. The
+ * charts use opcounters, network, connections and mem. `metrics` stays: the
+ * server leaves out `mem` without it.
+ */
+const PERFORMANCE_SKIPPED_SECTIONS = {
+  wiredTiger: 0,
+  locks: 0,
+  tcmalloc: 0,
+  repl: 0,
+  transactions: 0,
+  catalogStats: 0,
+  logicalSessionRecordCache: 0,
+  storageEngine: 0,
+  globalLock: 0,
+  asserts: 0
+};
 
 export interface DataPanelContext {
   connectionId: string;
@@ -44,6 +66,8 @@ export class DataPanel extends BaseWebviewPanel {
 
   private customTitle?: string;
   private performanceCpuCores?: number;
+  /** Started with the panel, so the queries run while the webview is still loading. */
+  private initialLoad?: Promise<unknown>;
 
   static open(
     extensionUri: vscode.Uri,
@@ -79,9 +103,12 @@ export class DataPanel extends BaseWebviewPanel {
   ) {
     super(extensionUri);
     this.customTitle = title;
-    this.initializePanel(viewColumn);
+    if (this.initializePanel(viewColumn)) {
+      this.initialLoad = this.loadInit();
+      // Reported through the init message; this only keeps the rejection handled.
+      this.initialLoad.catch(() => undefined);
+    }
     this.registerHandlers();
-    void this.pushInitialData();
   }
 
   protected override onPanelReused(): void {
@@ -100,23 +127,20 @@ export class DataPanel extends BaseWebviewPanel {
     return new Namespace(this.context.database, this.context.collection);
   }
 
-  private async pushInitialData(): Promise<void> {
+  private async loadInit(): Promise<unknown> {
+    const base = { kind: this.kind, title: this.title, context: this.context };
     try {
-      const data = await this.loadData();
-      this.post('init', {
-        kind: this.kind,
-        title: this.title,
-        context: this.context,
-        data
-      });
+      return { ...base, data: await this.loadData() };
     } catch (err) {
-      this.post('init', {
-        kind: this.kind,
-        title: this.title,
-        context: this.context,
-        error: (err as Error).message
-      });
+      return { ...base, error: (err as Error).message };
     }
+  }
+
+  /** Send the view its data: the load started with the panel if there is one, a fresh one otherwise. */
+  private async pushInitialData(): Promise<void> {
+    const pending = this.initialLoad ?? this.loadInit();
+    this.initialLoad = undefined;
+    this.post('init', await pending);
   }
 
   private async loadData(): Promise<unknown> {
@@ -159,7 +183,7 @@ export class DataPanel extends BaseWebviewPanel {
       service.listIndexes(ns),
       service.listSearchIndexes(ns),
       service.listIndexStats(ns),
-      service.collectionStats(ns.database, ns.collection).catch(() => null)
+      service.collectionSizes(ns.database, ns.collection).catch(() => null)
     ]);
     return {
       namespace: ns.toString(),
@@ -207,19 +231,23 @@ export class DataPanel extends BaseWebviewPanel {
         service.listDatabases(),
         service.listCollections(this.context.database)
       ]);
-      const collectionStats = await Promise.all(collections.map(async (collection) => {
-        const stats = await service.collectionStats(this.context.database as string, collection.name).catch(() => null);
+      // A few at a time: a database with hundreds of collections would otherwise
+      // take the whole connection pool and stall every other view meanwhile.
+      const collectionStats = await mapLimit(collections, STATS_CONCURRENCY, async (collection) => {
+        const stats = collection.type === 'view'
+          ? null
+          : await service.collectionSizes(this.context.database as string, collection.name).catch(() => null);
         return {
           name: collection.name,
           type: collection.type,
-          count: Number(stats?.count ?? 0),
-          dataSize: Number(stats?.size ?? 0),
-          storageSize: Number(stats?.storageSize ?? 0),
-          avgObjectSize: Number(stats?.avgObjSize ?? 0),
-          indexes: Number(stats?.nindexes ?? 0),
-          indexSize: Number(stats?.totalIndexSize ?? 0)
+          count: stats?.count ?? 0,
+          dataSize: stats?.size ?? 0,
+          storageSize: stats?.storageSize ?? 0,
+          avgObjectSize: stats?.avgObjSize ?? 0,
+          indexes: stats?.nindexes ?? 0,
+          indexSize: stats?.totalIndexSize ?? 0
         };
-      }));
+      });
       const info = databases.find((d) => d.name === this.context.database);
       const totalSizeOnDisk = databases.reduce((sum, database) => sum + (database.sizeOnDisk ?? 0), 0);
       const sortedBySize = [...databases].sort((a, b) => (b.sizeOnDisk ?? 0) - (a.sizeOnDisk ?? 0));
@@ -267,8 +295,8 @@ export class DataPanel extends BaseWebviewPanel {
     const service = await this.service();
     const connection = this.connectionManager.get(this.context.connectionId);
     const [serverStatus, currentOp, top, hostInfo] = await Promise.all([
-      service.serverStatus(),
-      service.currentOp().catch(() => ({ inprog: [] })),
+      service.serverStatus(PERFORMANCE_SKIPPED_SECTIONS),
+      service.currentOp({ truncateOps: true }).catch(() => ({ inprog: [] })),
       service.runCommand('admin', { top: 1 }).catch(() => ({ totals: {} })),
       this.performanceCpuCores === undefined
         ? service.runCommand('admin', { hostInfo: 1 }).catch(() => ({}))

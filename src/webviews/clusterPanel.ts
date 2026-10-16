@@ -45,9 +45,15 @@ export class ClusterPanel extends BaseWebviewPanel {
     private readonly initialTab?: string
   ) {
     super(extensionUri);
-    this.initializePanel(vscode.ViewColumn.Active);
+    if (this.initializePanel(vscode.ViewColumn.Active)) {
+      // Read the cluster while the webview is still loading.
+      this.initialLoad = this.load();
+      this.initialLoad.catch(() => undefined);
+    }
     this.registerHandlers();
   }
+
+  private initialLoad?: Promise<unknown>;
 
   protected override onPanelReused(): void {
     this.post('select', { tab: this.initialTab });
@@ -60,8 +66,10 @@ export class ClusterPanel extends BaseWebviewPanel {
 
   private registerHandlers(): void {
     this.registerHandler('ready', async (_msg, respond) => {
+      const pending = this.initialLoad ?? this.load();
+      this.initialLoad = undefined;
       try {
-        respond({ data: await this.load(), tab: this.initialTab });
+        respond({ data: await pending, tab: this.initialTab });
       } catch (err) {
         respond({ error: (err as Error).message, tab: this.initialTab });
       }

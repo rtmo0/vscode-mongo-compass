@@ -83,6 +83,8 @@ export function parseShardHost(value: string): { setName?: string; hosts: string
  * also work when the saved connection points at a secondary directly.
  */
 export class ClusterService {
+  private readonly overviews = new Map<string, Promise<ClusterOverview>>();
+
   constructor(
     private readonly connectionManager: ConnectionManager,
     private readonly nodes: NodeClientPool
@@ -90,10 +92,28 @@ export class ClusterService {
 
   // ───────────────────────────── topology ─────────────────────────────
 
-  async overview(connectionId: string): Promise<ClusterOverview> {
+  /**
+   * Topology, members, sharding and warnings of a deployment. Calls made while
+   * one is running (the Cluster view and the dashboard opening together) share it.
+   */
+  overview(connectionId: string): Promise<ClusterOverview> {
+    let pending = this.overviews.get(connectionId);
+    if (!pending) {
+      pending = this.readOverview(connectionId).finally(() => this.overviews.delete(connectionId));
+      this.overviews.set(connectionId, pending);
+    }
+    return pending;
+  }
+
+  private async readOverview(connectionId: string): Promise<ClusterOverview> {
     const connection = await this.connection(connectionId);
     const admin = connection.client.db('admin');
-    const hello = await admin.command({ hello: 1 });
+    const [hello, fcv, rwConcern, buildInfo] = await Promise.all([
+      admin.command({ hello: 1 }),
+      admin.command({ getParameter: 1, featureCompatibilityVersion: 1 }).catch(() => undefined),
+      admin.command({ getDefaultRWConcern: 1 }).catch(() => undefined),
+      admin.command({ buildInfo: 1 }).catch(() => undefined)
+    ]);
     const warnings: string[] = [];
 
     const overview: ClusterOverview = {
@@ -107,11 +127,6 @@ export class ClusterService {
       warnings
     };
 
-    const [fcv, rwConcern, buildInfo] = await Promise.all([
-      admin.command({ getParameter: 1, featureCompatibilityVersion: 1 }).catch(() => undefined),
-      admin.command({ getDefaultRWConcern: 1 }).catch(() => undefined),
-      admin.command({ buildInfo: 1 }).catch(() => undefined)
-    ]);
     // Read the version now: it changes during rolling upgrades while the connection stays open.
     if (buildInfo?.version) {
       overview.serverVersion = String(buildInfo.version);
@@ -156,9 +171,10 @@ export class ClusterService {
 
   async readReplicaSet(client: MongoClient, configsvr = false): Promise<ReplicaSetInfo> {
     const admin = client.db('admin');
-    const [status, configResult] = await Promise.all([
+    const [status, configResult, oplog] = await Promise.all([
       admin.command({ replSetGetStatus: 1 }),
-      admin.command({ replSetGetConfig: 1 })
+      admin.command({ replSetGetConfig: 1 }),
+      this.readOplog(client).catch(() => undefined)
     ]);
     const config = configResult.config as Document;
     const configMembers = new Map(((config.members ?? []) as Document[]).map((m) => [Number(m._id), m]));
@@ -208,16 +224,19 @@ export class ClusterService {
       electionTimeoutMillis: settings.electionTimeoutMillis as number | undefined,
       writeConcernMajorityJournalDefault: config.writeConcernMajorityJournalDefault as boolean | undefined,
       configsvr: configsvr || Boolean(config.configsvr),
-      oplog: await this.readOplog(client).catch(() => undefined)
+      oplog
     };
   }
 
   private async readOplog(client: MongoClient): Promise<OplogInfo> {
     const oplog = client.db('local').collection('oplog.rs');
-    const [stats] = await oplog.aggregate([{ $collStats: { storageStats: {} } }]).toArray();
+    const [[stats], [first], [last]] = await Promise.all([
+      // Only the sizes: the full storage stats carry the storage engine details.
+      oplog.aggregate([{ $collStats: { storageStats: {} } }, { $project: { 'storageStats.maxSize': 1, 'storageStats.size': 1 } }]).toArray(),
+      oplog.find({}, { projection: { ts: 1, wall: 1 } }).sort({ $natural: 1 }).limit(1).toArray(),
+      oplog.find({}, { projection: { ts: 1, wall: 1 } }).sort({ $natural: -1 }).limit(1).toArray()
+    ]);
     const storage = (stats?.storageStats ?? {}) as Document;
-    const [first] = await oplog.find({}, { projection: { ts: 1, wall: 1 } }).sort({ $natural: 1 }).limit(1).toArray();
-    const [last] = await oplog.find({}, { projection: { ts: 1, wall: 1 } }).sort({ $natural: -1 }).limit(1).toArray();
     const toDate = (entry: Document | undefined): Date | undefined => {
       if (!entry) {
         return undefined;
@@ -281,9 +300,29 @@ export class ClusterService {
     });
 
     // Each shard and the config servers are replica sets the mongos cannot
-    // report on, so ask one of their members directly.
-    await Promise.all(
-      shards.map(async (shard) => {
+    // report on, so ask one of their members directly — all of them at once.
+    const readConfigServers = async (): Promise<ShardingInfo['configServers']> => {
+      const configHost = (shardMap?.map as Document | undefined)?.config;
+      if (typeof configHost !== 'string') {
+        return undefined;
+      }
+      const parsed = parseShardHost(configHost);
+      try {
+        const { client: member } = await this.nodes.anyMember(connectionId, parsed.hosts);
+        return { ...(await this.readReplicaSet(member, true)), hosts: parsed.hosts };
+      } catch (err) {
+        return {
+          name: parsed.setName ?? 'config',
+          members: [],
+          configsvr: true,
+          hosts: parsed.hosts,
+          error: (err as Error).message
+        };
+      }
+    };
+    const [configServers] = await Promise.all([
+      readConfigServers(),
+      ...shards.map(async (shard) => {
         try {
           const { client: member } = await this.nodes.anyMember(connectionId, shard.hosts);
           shard.replicaSet = await this.readReplicaSet(member);
@@ -296,25 +335,7 @@ export class ClusterService {
           };
         }
       })
-    );
-
-    let configServers: ShardingInfo['configServers'];
-    const configHost = (shardMap?.map as Document | undefined)?.config;
-    if (typeof configHost === 'string') {
-      const parsed = parseShardHost(configHost);
-      try {
-        const { client: member } = await this.nodes.anyMember(connectionId, parsed.hosts);
-        configServers = { ...(await this.readReplicaSet(member, true)), hosts: parsed.hosts };
-      } catch (err) {
-        configServers = {
-          name: parsed.setName ?? 'config',
-          members: [],
-          configsvr: true,
-          hosts: parsed.hosts,
-          error: (err as Error).message
-        };
-      }
-    }
+    ]);
 
     const routers: RouterInfo[] = routersDocs.map((r) => {
       const ping = r.ping instanceof Date ? r.ping : undefined;
@@ -437,8 +458,11 @@ export class ClusterService {
     };
     // Delayed members are expected to lag, so read their delay from the config.
     const withDelays = async (client: MongoClient): Promise<ReturnType<typeof fromStatus>> => {
-      const status = fromStatus(await client.db('admin').command({ replSetGetStatus: 1 }));
-      const { config } = await client.db('admin').command({ replSetGetConfig: 1 });
+      const [rawStatus, { config }] = await Promise.all([
+        client.db('admin').command({ replSetGetStatus: 1 }),
+        client.db('admin').command({ replSetGetConfig: 1 })
+      ]);
+      const status = fromStatus(rawStatus);
       const delays = new Map(((config.members ?? []) as Document[]).map((m) => [String(m.host), Number(m.secondaryDelaySecs ?? m.slaveDelay ?? 0)]));
       status.members.forEach((m) => (m.secondaryDelaySecs = delays.get(m.host) ?? 0));
       return status;
