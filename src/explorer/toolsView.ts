@@ -21,6 +21,18 @@ const TOOLS: ToolItem[] = [
     command: 'mongoCompass.connectWithUri'
   },
   {
+    label: 'New Deployment',
+    description: 'Run MongoDB in Docker, locally, on Kubernetes or Atlas',
+    icon: 'rocket',
+    command: 'mongoCompass.deploy.create'
+  },
+  {
+    label: 'Cluster Overview',
+    description: 'Topology, members, sharding and users',
+    icon: 'type-hierarchy',
+    command: 'mongoCompass.showClusterOverview'
+  },
+  {
     label: 'Query History',
     description: 'Recently executed queries and pipelines',
     icon: 'history',

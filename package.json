@@ -1,8 +1,8 @@
 {
   "name": "mongo-compass",
   "displayName": "MongoDB Explorer & Compass Tools",
-  "description": "Explore MongoDB, edit documents, build aggregation pipelines, manage indexes, analyze schemas and inspect performance without leaving VS Code.",
-  "version": "1.0.0",
+  "description": "Explore MongoDB, edit documents, build aggregation pipelines, manage indexes and schemas — and deploy and operate replica sets and sharded clusters on Docker, local processes, Kubernetes or Atlas without leaving VS Code.",
+  "version": "1.1.0",
   "publisher": "samarin-aa-aka-rtm00",
   "icon": "resources/mongodb.png",
   "license": "SEE LICENSE IN LICENSE",
@@ -35,7 +35,13 @@
     "database",
     "nosql",
     "aggregation",
-    "atlas"
+    "atlas",
+    "replica set",
+    "sharding",
+    "devops",
+    "docker",
+    "kubernetes",
+    "deployment"
   ],
   "main": "./dist/extension.js",
   "extensionKind": [
@@ -73,6 +79,18 @@
           "contextualTitle": "MongoDB"
         },
         {
+          "id": "mongoCompass.deployments",
+          "name": "Deployments",
+          "icon": "resources/mongodb.svg",
+          "contextualTitle": "MongoDB"
+        },
+        {
+          "id": "mongoCompass.cluster",
+          "name": "Cluster",
+          "icon": "resources/mongodb.svg",
+          "contextualTitle": "MongoDB"
+        },
+        {
           "id": "mongoCompass.tools",
           "name": "Tools",
           "icon": "resources/tools.svg",
@@ -84,6 +102,14 @@
       {
         "view": "mongoCompass.explorer",
         "contents": "No MongoDB connections yet.\n[Add Connection](command:mongoCompass.addConnection)\n[Connect with URI…](command:mongoCompass.connectWithUri)"
+      },
+      {
+        "view": "mongoCompass.deployments",
+        "contents": "Run MongoDB in Docker, as local processes, on Kubernetes (Percona / MongoDB operator or a StatefulSet) or in Atlas — and manage it from here.\n[New Deployment](command:mongoCompass.deploy.create)\n[Attach Kubernetes Deployment](command:mongoCompass.deploy.attachKubernetes)\n[Import Atlas Clusters](command:mongoCompass.deploy.importAtlas)"
+      },
+      {
+        "view": "mongoCompass.cluster",
+        "contents": "Connect to a replica set or sharded cluster to see its topology, members, shards and routers."
       }
     ],
     "commands": [
@@ -374,6 +400,420 @@
         "title": "Show Output Channel",
         "category": "MongoDB",
         "icon": "$(output)"
+      },
+      {
+        "command": "mongoCompass.showClusterOverview",
+        "title": "Cluster Overview",
+        "category": "MongoDB",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "mongoCompass.cluster.refresh",
+        "title": "Refresh Cluster",
+        "category": "MongoDB",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mongoCompass.cluster.manageUsers",
+        "title": "Users & Roles",
+        "category": "MongoDB",
+        "icon": "$(person)"
+      },
+      {
+        "command": "mongoCompass.cluster.stepDown",
+        "title": "Step Down Primary…",
+        "category": "MongoDB",
+        "icon": "$(debug-step-out)"
+      },
+      {
+        "command": "mongoCompass.cluster.makePrimary",
+        "title": "Make Primary",
+        "category": "MongoDB",
+        "icon": "$(star-full)"
+      },
+      {
+        "command": "mongoCompass.cluster.freeze",
+        "title": "Freeze Member…",
+        "category": "MongoDB",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "mongoCompass.cluster.unfreeze",
+        "title": "Unfreeze Member",
+        "category": "MongoDB",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "mongoCompass.cluster.maintenance",
+        "title": "Toggle Maintenance Mode",
+        "category": "MongoDB",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "mongoCompass.cluster.syncFrom",
+        "title": "Sync From…",
+        "category": "MongoDB",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "mongoCompass.cluster.memberSettings",
+        "title": "Member Settings (Priority, Votes, Hidden, Delay, Tags)…",
+        "category": "MongoDB",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "mongoCompass.cluster.addMember",
+        "title": "Add Replica Set Member…",
+        "category": "MongoDB",
+        "icon": "$(add)"
+      },
+      {
+        "command": "mongoCompass.cluster.removeMember",
+        "title": "Remove Replica Set Member…",
+        "category": "MongoDB",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "mongoCompass.cluster.nodeStatus",
+        "title": "Member Server Status",
+        "category": "MongoDB",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "mongoCompass.cluster.nodeLog",
+        "title": "Member Log",
+        "category": "MongoDB",
+        "icon": "$(output)"
+      },
+      {
+        "command": "mongoCompass.cluster.nodeShell",
+        "title": "Open mongosh on Member",
+        "category": "MongoDB",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "mongoCompass.cluster.openOplog",
+        "title": "Browse Oplog",
+        "category": "MongoDB",
+        "icon": "$(list-ordered)"
+      },
+      {
+        "command": "mongoCompass.cluster.shardCollection",
+        "title": "Shard Collection…",
+        "category": "MongoDB",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "mongoCompass.cluster.reshardCollection",
+        "title": "Reshard Collection…",
+        "category": "MongoDB",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "mongoCompass.cluster.refineShardKey",
+        "title": "Refine Shard Key…",
+        "category": "MongoDB",
+        "icon": "$(key)"
+      },
+      {
+        "command": "mongoCompass.cluster.unshardCollection",
+        "title": "Unshard Collection…",
+        "category": "MongoDB",
+        "icon": "$(merge)"
+      },
+      {
+        "command": "mongoCompass.cluster.moveCollection",
+        "title": "Move Unsharded Collection…",
+        "category": "MongoDB",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "mongoCompass.cluster.analyzeShardKey",
+        "title": "Analyze Shard Key…",
+        "category": "MongoDB",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "mongoCompass.cluster.toggleCollectionBalancing",
+        "title": "Toggle Collection Balancing",
+        "category": "MongoDB",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "mongoCompass.cluster.addShard",
+        "title": "Add Shard…",
+        "category": "MongoDB",
+        "icon": "$(add)"
+      },
+      {
+        "command": "mongoCompass.cluster.removeShard",
+        "title": "Remove Shard…",
+        "category": "MongoDB",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "mongoCompass.cluster.movePrimary",
+        "title": "Move Database Primary…",
+        "category": "MongoDB",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "mongoCompass.cluster.startBalancer",
+        "title": "Start Balancer",
+        "category": "MongoDB",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "mongoCompass.cluster.stopBalancer",
+        "title": "Stop Balancer",
+        "category": "MongoDB",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "mongoCompass.cluster.balancerWindow",
+        "title": "Balancer Window…",
+        "category": "MongoDB",
+        "icon": "$(clock)"
+      },
+      {
+        "command": "mongoCompass.cluster.addShardToZone",
+        "title": "Add Shard to Zone…",
+        "category": "MongoDB",
+        "icon": "$(tag)"
+      },
+      {
+        "command": "mongoCompass.cluster.removeShardFromZone",
+        "title": "Remove Shard from Zone…",
+        "category": "MongoDB",
+        "icon": "$(close)"
+      },
+      {
+        "command": "mongoCompass.cluster.setFcv",
+        "title": "Set Feature Compatibility Version…",
+        "category": "MongoDB",
+        "icon": "$(versions)"
+      },
+      {
+        "command": "mongoCompass.cluster.setDefaultWriteConcern",
+        "title": "Set Default Write Concern…",
+        "category": "MongoDB",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "mongoCompass.database.profiler",
+        "title": "Database Profiler…",
+        "category": "MongoDB",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "mongoCompass.deploy.create",
+        "title": "New Deployment…",
+        "category": "MongoDB",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "mongoCompass.deploy.attachKubernetes",
+        "title": "Attach Kubernetes Deployment…",
+        "category": "MongoDB",
+        "icon": "$(symbol-namespace)"
+      },
+      {
+        "command": "mongoCompass.deploy.importAtlas",
+        "title": "Import Atlas Clusters…",
+        "category": "MongoDB",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "mongoCompass.deploy.atlasSignIn",
+        "title": "Atlas Sign In…",
+        "category": "MongoDB",
+        "icon": "$(account)"
+      },
+      {
+        "command": "mongoCompass.deploy.atlasSignOut",
+        "title": "Atlas Sign Out",
+        "category": "MongoDB",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "mongoCompass.deploy.refresh",
+        "title": "Refresh Deployments",
+        "category": "MongoDB",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mongoCompass.deploy.connect",
+        "title": "Connect to Deployment",
+        "category": "MongoDB",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "mongoCompass.deploy.start",
+        "title": "Start Deployment",
+        "category": "MongoDB",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "mongoCompass.deploy.stop",
+        "title": "Stop Deployment",
+        "category": "MongoDB",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "mongoCompass.deploy.destroy",
+        "title": "Destroy Deployment…",
+        "category": "MongoDB",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "mongoCompass.deploy.forget",
+        "title": "Forget Deployment (keep it running)",
+        "category": "MongoDB",
+        "icon": "$(close)"
+      },
+      {
+        "command": "mongoCompass.deploy.addMember",
+        "title": "Add Member…",
+        "category": "MongoDB",
+        "icon": "$(add)"
+      },
+      {
+        "command": "mongoCompass.deploy.removeMember",
+        "title": "Remove Member…",
+        "category": "MongoDB",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "mongoCompass.deploy.scale",
+        "title": "Scale Replica Set…",
+        "category": "MongoDB",
+        "icon": "$(arrow-both)"
+      },
+      {
+        "command": "mongoCompass.deploy.addShard",
+        "title": "Add Shard",
+        "category": "MongoDB",
+        "icon": "$(add)"
+      },
+      {
+        "command": "mongoCompass.deploy.removeShard",
+        "title": "Remove Shard…",
+        "category": "MongoDB",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "mongoCompass.deploy.addRouter",
+        "title": "Add Router (mongos)",
+        "category": "MongoDB",
+        "icon": "$(add)"
+      },
+      {
+        "command": "mongoCompass.deploy.removeRouter",
+        "title": "Remove Router…",
+        "category": "MongoDB",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "mongoCompass.deploy.restartNode",
+        "title": "Restart Node",
+        "category": "MongoDB",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "mongoCompass.deploy.startNode",
+        "title": "Start Node",
+        "category": "MongoDB",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "mongoCompass.deploy.stopNode",
+        "title": "Stop Node",
+        "category": "MongoDB",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "mongoCompass.deploy.killNode",
+        "title": "Simulate Crash (Kill Node)",
+        "category": "MongoDB",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "mongoCompass.deploy.pauseNode",
+        "title": "Simulate Hang (Freeze Node)",
+        "category": "MongoDB",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "mongoCompass.deploy.unpauseNode",
+        "title": "Unfreeze Node",
+        "category": "MongoDB",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "mongoCompass.deploy.logs",
+        "title": "Node Logs",
+        "category": "MongoDB",
+        "icon": "$(output)"
+      },
+      {
+        "command": "mongoCompass.deploy.shell",
+        "title": "Open mongosh on Node",
+        "category": "MongoDB",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "mongoCompass.deploy.describe",
+        "title": "Describe Node",
+        "category": "MongoDB",
+        "icon": "$(info)"
+      },
+      {
+        "command": "mongoCompass.deploy.rollingRestart",
+        "title": "Rolling Restart",
+        "category": "MongoDB",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "mongoCompass.deploy.upgrade",
+        "title": "Upgrade MongoDB Version…",
+        "category": "MongoDB",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "mongoCompass.deploy.failover",
+        "title": "Fail Over Primary",
+        "category": "MongoDB",
+        "icon": "$(debug-step-out)"
+      },
+      {
+        "command": "mongoCompass.deploy.export",
+        "title": "Export Definition (Compose / YAML / Script)",
+        "category": "MongoDB",
+        "icon": "$(export)"
+      },
+      {
+        "command": "mongoCompass.deploy.copyPassword",
+        "title": "Copy Admin Password",
+        "category": "MongoDB",
+        "icon": "$(key)"
+      },
+      {
+        "command": "mongoCompass.deploy.copyConnectionString",
+        "title": "Copy Connection String",
+        "category": "MongoDB",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "mongoCompass.deploy.backup",
+        "title": "Back Up (mongodump)…",
+        "category": "MongoDB",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "mongoCompass.deploy.installOperator",
+        "title": "Install Kubernetes Operator",
+        "category": "MongoDB",
+        "icon": "$(package)"
       }
     ],
     "menus": {
@@ -391,6 +831,41 @@
         {
           "command": "mongoCompass.showQueryHistory",
           "when": "view == mongoCompass.tools",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mongoCompass.deploy.create",
+          "when": "view == mongoCompass.deployments",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mongoCompass.deploy.refresh",
+          "when": "view == mongoCompass.deployments",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mongoCompass.deploy.attachKubernetes",
+          "when": "view == mongoCompass.deployments",
+          "group": "1_import@1"
+        },
+        {
+          "command": "mongoCompass.deploy.importAtlas",
+          "when": "view == mongoCompass.deployments",
+          "group": "1_import@2"
+        },
+        {
+          "command": "mongoCompass.deploy.atlasSignIn",
+          "when": "view == mongoCompass.deployments",
+          "group": "2_atlas@1"
+        },
+        {
+          "command": "mongoCompass.deploy.atlasSignOut",
+          "when": "view == mongoCompass.deployments",
+          "group": "2_atlas@2"
+        },
+        {
+          "command": "mongoCompass.cluster.refresh",
+          "when": "view == mongoCompass.cluster",
           "group": "navigation@1"
         }
       ],
@@ -564,6 +1039,421 @@
           "command": "mongoCompass.dropIndex",
           "when": "view == mongoCompass.explorer && viewItem == index",
           "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.showClusterOverview",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.root/",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.showClusterOverview",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.root/",
+          "group": "1_view@1"
+        },
+        {
+          "command": "mongoCompass.cluster.manageUsers",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.root/",
+          "group": "1_view@2"
+        },
+        {
+          "command": "mongoCompass.cluster.openOplog",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.root.replicaSet",
+          "group": "1_view@3"
+        },
+        {
+          "command": "mongoCompass.cluster.setFcv",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.root\\.(replicaSet|sharded)/",
+          "group": "5_settings@1"
+        },
+        {
+          "command": "mongoCompass.cluster.setDefaultWriteConcern",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.root\\.(replicaSet|sharded)/",
+          "group": "5_settings@2"
+        },
+        {
+          "command": "mongoCompass.cluster.shardCollection",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.root.sharded",
+          "group": "3_sharding@1"
+        },
+        {
+          "command": "mongoCompass.cluster.addShard",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.root.sharded",
+          "group": "3_sharding@2"
+        },
+        {
+          "command": "mongoCompass.cluster.addMember",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.(rs|shard)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.cluster.addMember",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.(rs|shard)$/",
+          "group": "1_rs@1"
+        },
+        {
+          "command": "mongoCompass.cluster.stepDown",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.member.primary",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.cluster.makePrimary",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.member.secondary",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.cluster.stepDown",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.member.primary",
+          "group": "1_election@1"
+        },
+        {
+          "command": "mongoCompass.cluster.makePrimary",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.member.secondary",
+          "group": "1_election@2"
+        },
+        {
+          "command": "mongoCompass.cluster.freeze",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.member.secondary",
+          "group": "1_election@3"
+        },
+        {
+          "command": "mongoCompass.cluster.unfreeze",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.member.secondary",
+          "group": "1_election@4"
+        },
+        {
+          "command": "mongoCompass.cluster.maintenance",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.member\\.(secondary|other)/",
+          "group": "2_member@1"
+        },
+        {
+          "command": "mongoCompass.cluster.syncFrom",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.member.secondary",
+          "group": "2_member@2"
+        },
+        {
+          "command": "mongoCompass.cluster.memberSettings",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.member\\.(primary|secondary|other|down)/",
+          "group": "2_member@3"
+        },
+        {
+          "command": "mongoCompass.cluster.nodeStatus",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.member\\.(primary|secondary|arbiter|other)/",
+          "group": "3_inspect@1"
+        },
+        {
+          "command": "mongoCompass.cluster.nodeLog",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.member\\.(primary|secondary|arbiter|other)/",
+          "group": "3_inspect@2"
+        },
+        {
+          "command": "mongoCompass.cluster.nodeShell",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.member\\.(primary|secondary|other)/",
+          "group": "3_inspect@3"
+        },
+        {
+          "command": "mongoCompass.cluster.nodeLog",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.router",
+          "group": "3_inspect@2"
+        },
+        {
+          "command": "mongoCompass.cluster.nodeShell",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.router",
+          "group": "3_inspect@3"
+        },
+        {
+          "command": "mongoCompass.cluster.removeMember",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.member\\.(secondary|arbiter|other|down)/",
+          "group": "9_danger@1"
+        },
+        {
+          "command": "mongoCompass.cluster.addShardToZone",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.shard",
+          "group": "2_shard@1"
+        },
+        {
+          "command": "mongoCompass.cluster.removeShardFromZone",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.shard",
+          "group": "2_shard@2"
+        },
+        {
+          "command": "mongoCompass.cluster.removeShard",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.shard",
+          "group": "9_danger@1"
+        },
+        {
+          "command": "mongoCompass.cluster.addShard",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.shards",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.cluster.stopBalancer",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.balancer.running",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.cluster.startBalancer",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.balancer.stopped",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.cluster.balancerWindow",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.balancer/",
+          "group": "1_balancer@1"
+        },
+        {
+          "command": "mongoCompass.cluster.shardCollection",
+          "when": "view == mongoCompass.cluster && viewItem == cluster.collections",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.cluster.toggleCollectionBalancing",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.shardedCollection/",
+          "group": "1_coll@1"
+        },
+        {
+          "command": "mongoCompass.cluster.reshardCollection",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.shardedCollection/",
+          "group": "2_key@1"
+        },
+        {
+          "command": "mongoCompass.cluster.refineShardKey",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.shardedCollection/",
+          "group": "2_key@2"
+        },
+        {
+          "command": "mongoCompass.cluster.analyzeShardKey",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.shardedCollection/",
+          "group": "2_key@3"
+        },
+        {
+          "command": "mongoCompass.cluster.unshardCollection",
+          "when": "view == mongoCompass.cluster && viewItem =~ /^cluster\\.shardedCollection/",
+          "group": "9_danger@1"
+        },
+        {
+          "command": "mongoCompass.showClusterOverview",
+          "when": "view == mongoCompass.explorer && viewItem == connection.connected",
+          "group": "3_monitoring@2"
+        },
+        {
+          "command": "mongoCompass.cluster.manageUsers",
+          "when": "view == mongoCompass.explorer && viewItem == connection.connected",
+          "group": "3_monitoring@3"
+        },
+        {
+          "command": "mongoCompass.cluster.shardCollection",
+          "when": "view == mongoCompass.explorer && viewItem == collection",
+          "group": "7_sharding@1"
+        },
+        {
+          "command": "mongoCompass.cluster.analyzeShardKey",
+          "when": "view == mongoCompass.explorer && viewItem == collection",
+          "group": "7_sharding@2"
+        },
+        {
+          "command": "mongoCompass.cluster.moveCollection",
+          "when": "view == mongoCompass.explorer && viewItem == collection",
+          "group": "7_sharding@3"
+        },
+        {
+          "command": "mongoCompass.database.profiler",
+          "when": "view == mongoCompass.explorer && viewItem == database",
+          "group": "3_stats@2"
+        },
+        {
+          "command": "mongoCompass.cluster.movePrimary",
+          "when": "view == mongoCompass.explorer && viewItem == database",
+          "group": "7_sharding@1"
+        },
+        {
+          "command": "mongoCompass.deploy.connect",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.deploy.connect",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "1_connect@1"
+        },
+        {
+          "command": "mongoCompass.deploy.copyConnectionString",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "1_connect@2"
+        },
+        {
+          "command": "mongoCompass.deploy.copyPassword",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "1_connect@3"
+        },
+        {
+          "command": "mongoCompass.deploy.start",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\.(docker|local|kubernetes|atlas)\\.(stopped|paused|degraded|error)/",
+          "group": "inline@2"
+        },
+        {
+          "command": "mongoCompass.deploy.stop",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\.(docker|local|kubernetes|atlas)\\.(running|degraded)/",
+          "group": "inline@2"
+        },
+        {
+          "command": "mongoCompass.deploy.start",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "2_lifecycle@1"
+        },
+        {
+          "command": "mongoCompass.deploy.stop",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "2_lifecycle@2"
+        },
+        {
+          "command": "mongoCompass.deploy.rollingRestart",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\.(docker|local|kubernetes)/",
+          "group": "2_lifecycle@3"
+        },
+        {
+          "command": "mongoCompass.deploy.upgrade",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "2_lifecycle@4"
+        },
+        {
+          "command": "mongoCompass.deploy.failover",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "2_lifecycle@5"
+        },
+        {
+          "command": "mongoCompass.deploy.addMember",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "3_topology@1"
+        },
+        {
+          "command": "mongoCompass.deploy.removeMember",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "3_topology@2"
+        },
+        {
+          "command": "mongoCompass.deploy.scale",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\.(kubernetes|atlas)/",
+          "group": "3_topology@3"
+        },
+        {
+          "command": "mongoCompass.deploy.addShard",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "3_topology@4"
+        },
+        {
+          "command": "mongoCompass.deploy.removeShard",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "3_topology@5"
+        },
+        {
+          "command": "mongoCompass.deploy.addRouter",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\.(docker|local|kubernetes)/",
+          "group": "3_topology@6"
+        },
+        {
+          "command": "mongoCompass.deploy.removeRouter",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\.(docker|local|kubernetes)/",
+          "group": "3_topology@7"
+        },
+        {
+          "command": "mongoCompass.deploy.export",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "4_tools@1"
+        },
+        {
+          "command": "mongoCompass.deploy.backup",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "4_tools@2"
+        },
+        {
+          "command": "mongoCompass.deploy.installOperator",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\.kubernetes/",
+          "group": "4_tools@3"
+        },
+        {
+          "command": "mongoCompass.deploy.forget",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "9_danger@1"
+        },
+        {
+          "command": "mongoCompass.deploy.destroy",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deployment\\./",
+          "group": "9_danger@2"
+        },
+        {
+          "command": "mongoCompass.deploy.addMember",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentGroup\\..*\\.rs$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.deploy.addRouter",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentGroup\\..*\\.routers$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.deploy.logs",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\./",
+          "group": "inline@1"
+        },
+        {
+          "command": "mongoCompass.deploy.shell",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\..*\\.running$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "mongoCompass.deploy.logs",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\./",
+          "group": "1_inspect@1"
+        },
+        {
+          "command": "mongoCompass.deploy.shell",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\./",
+          "group": "1_inspect@2"
+        },
+        {
+          "command": "mongoCompass.deploy.describe",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\./",
+          "group": "1_inspect@3"
+        },
+        {
+          "command": "mongoCompass.deploy.restartNode",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\.(docker|local|kubernetes)/",
+          "group": "2_node@1"
+        },
+        {
+          "command": "mongoCompass.deploy.startNode",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\.(docker|local)\\..*\\.stopped$/",
+          "group": "2_node@2"
+        },
+        {
+          "command": "mongoCompass.deploy.stopNode",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\.(docker|local)\\..*\\.running$/",
+          "group": "2_node@3"
+        },
+        {
+          "command": "mongoCompass.deploy.killNode",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\.(docker|local|kubernetes)\\..*\\.running$/",
+          "group": "3_chaos@1"
+        },
+        {
+          "command": "mongoCompass.deploy.pauseNode",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\.(docker|local)\\..*\\.running$/",
+          "group": "3_chaos@2"
+        },
+        {
+          "command": "mongoCompass.deploy.unpauseNode",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\.(docker|local)\\..*\\.paused$/",
+          "group": "3_chaos@3"
+        },
+        {
+          "command": "mongoCompass.deploy.removeMember",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\.(docker|local|kubernetes)\\.(mongod|arbiter|configsvr)/",
+          "group": "9_danger@1"
+        },
+        {
+          "command": "mongoCompass.deploy.removeRouter",
+          "when": "view == mongoCompass.deployments && viewItem =~ /^deploymentNode\\.(docker|local|kubernetes)\\.mongos/",
+          "group": "9_danger@1"
         }
       ],
       "commandPalette": [
@@ -585,6 +1475,46 @@
         },
         {
           "command": "mongoCompass.dropIndex",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.cluster.stepDown",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.cluster.makePrimary",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.cluster.freeze",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.cluster.unfreeze",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.cluster.maintenance",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.cluster.syncFrom",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.cluster.memberSettings",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.cluster.removeMember",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.cluster.nodeStatus",
+          "when": "false"
+        },
+        {
+          "command": "mongoCompass.cluster.nodeShell",
           "when": "false"
         }
       ]
@@ -663,6 +1593,53 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically re-run the aggregation preview when a stage changes."
+        },
+        "mongoCompass.cluster.monitorIntervalSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "How often connected replica sets and sharded clusters are checked for elections, unhealthy members and replication lag (seconds; 0 turns monitoring off)."
+        },
+        "mongoCompass.cluster.lagWarningSeconds": {
+          "type": "number",
+          "default": 30,
+          "description": "Warn when a secondary falls this many seconds behind its primary."
+        },
+        "mongoCompass.cluster.notifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notifications for elections, members going down or recovering, and replication lag."
+        },
+        "mongoCompass.deployments.refreshIntervalSeconds": {
+          "type": "number",
+          "default": 15,
+          "minimum": 0,
+          "description": "How often the Deployments view refreshes node status while it is visible (seconds; 0 disables)."
+        },
+        "mongoCompass.local.binDir": {
+          "type": "string",
+          "default": "",
+          "description": "Folder containing mongod and mongos for local-process deployments. Empty uses PATH."
+        },
+        "mongoCompass.kubernetes.protectedContexts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "*prod*"
+          ],
+          "description": "kubectl contexts (wildcards allowed) where every change to a deployment requires typing the context name."
+        },
+        "mongoCompass.kubernetes.perconaOperatorVersion": {
+          "type": "string",
+          "default": "1.22.0",
+          "description": "Percona Operator for MongoDB version installed by the extension (also used as crVersion of new clusters)."
+        },
+        "mongoCompass.kubernetes.communityOperatorChart": {
+          "type": "string",
+          "default": "mongodb/mongodb-kubernetes",
+          "description": "Helm chart installed for MongoDBCommunity resources (MongoDB Controllers for Kubernetes)."
         }
       }
     },

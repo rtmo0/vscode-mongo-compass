@@ -24,6 +24,14 @@ import {
   redactUri
 } from './explorer/mongoExplorer';
 import { MongoToolsProvider } from './explorer/toolsView';
+import { ClusterTreeProvider } from './explorer/clusterView';
+import { DeploymentsTreeProvider } from './explorer/deploymentsView';
+import { NodeClientPool } from './core/cluster/nodeClients';
+import { ClusterService } from './core/cluster/clusterService';
+import { ClusterMonitor } from './core/cluster/clusterMonitor';
+import { DeploymentRegistry } from './deploy/registry';
+import { registerClusterCommands } from './commands/clusterCommands';
+import { registerDeploymentCommands } from './commands/deploymentCommands';
 
 import { DocumentsPanel } from './webviews/documentsPanel';
 import { AggregationPanel } from './webviews/aggregationPanel';
@@ -71,6 +79,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerCollectionCommands(context, services);
   registerDataCommands(context, services);
   registerToolCommands(context, services);
+
+  // Cluster administration (topology, replica sets, sharding) and deployments.
+  const nodes = new NodeClientPool(connectionManager);
+  const cluster = new ClusterService(connectionManager, nodes);
+  const monitor = new ClusterMonitor(connectionManager, cluster);
+  const clusterTree = new ClusterTreeProvider(connectionManager, cluster);
+  const registry = new DeploymentRegistry(context, connectionManager, nodes);
+  const deploymentsTree = new DeploymentsTreeProvider(registry, connectionManager);
+  const deploymentsView = vscode.window.createTreeView('mongoCompass.deployments', { treeDataProvider: deploymentsTree, showCollapseAll: true });
+  deploymentsTree.attach(deploymentsView);
+  // Kubernetes deployments are reached through port-forwards that must be (re)started before connecting.
+  connectionManager.setBeforeConnect(async (id) => {
+    const record = registry.byConnection(id);
+    if (record?.spec.provider === 'kubernetes') {
+      await registry.ensureConnection(record);
+    }
+  });
+  context.subscriptions.push(
+    nodes,
+    monitor,
+    clusterTree,
+    registry,
+    deploymentsTree,
+    deploymentsView,
+    vscode.window.registerTreeDataProvider('mongoCompass.cluster', clusterTree),
+    monitor.onDidUpdate(() => clusterTree.refresh())
+  );
+  registerClusterCommands(context, { extensionUri: context.extensionUri, connectionManager, cluster, nodes, tree: clusterTree, monitor });
+  registerDeploymentCommands(context, { connectionManager, cluster, registry, tree: deploymentsTree, refreshExplorer: () => explorer.refresh() });
 
   // Keep the status bar in sync with the active connection.
   const statusItem = vscode.window.createStatusBarItem(

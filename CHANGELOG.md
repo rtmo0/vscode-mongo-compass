@@ -2,6 +2,23 @@
 
 All notable changes to this extension are documented in this file.
 
+## 1.1.0 - 2026-10-16
+
+### Added
+
+- **Cluster** view and **Cluster Overview** panel: replica set members with state, lag, priority / votes / hidden / delay and oplog window; routers, config servers, shards, balancer and sharded collections of sharded clusters.
+- Elections and membership: step down, make a chosen secondary primary, freeze, maintenance mode, sync from, add / remove members (secondary, hidden, delayed, non-voting, arbiter), member settings, and a replica set config editor — all with safety checks (majority, one voting change at a time, priority rules).
+- Sharding: shard / reshard / unshard / move collections, refine and analyze shard keys, add / drain / remove shards, movePrimary, balancer control and window, per-collection balancing, zones and zone ranges, moveRange, split, chunk and data distribution.
+- Users and roles, featureCompatibilityVersion, default write concern, database profiler and oplog browser.
+- Background cluster monitoring with notifications for elections, members going down / recovering and replication lag, and a health item in the status bar.
+- **Deployments** view: create standalone servers, replica sets and sharded clusters on Docker, as local processes, on Kubernetes (Percona Operator, MongoDB Community, plain StatefulSet) or in MongoDB Atlas; attach existing Kubernetes deployments and import Atlas clusters.
+- Deployment operations: start / stop, add / remove members, scale, add / remove shards and routers, restart nodes, rolling restart, rolling upgrade, failover, failure simulation (kill / freeze), logs, mongosh, describe, export (docker-compose, script, YAML, API body), mongodump backup, copy password / connection string, destroy.
+
+### Fixed
+
+- Sharded clusters were reported with the topology `isdbgrid`; they now show as `sharded`.
+- Atlas deployments were not recognised as Atlas, because the host name check did not allow the port.
+
 ## 1.0.0 - 2026-10-14
 
 ### Changed

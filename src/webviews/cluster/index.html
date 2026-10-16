@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}'; font-src {{cspSource}};"
+    />
+    <title>{{title}}</title>
+    <style>
+      .cl-scroll { flex: 1; overflow: auto; padding: 12px 16px 24px; }
+      .cl-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; margin-bottom: 14px; }
+      .cl-card { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 8px 10px; background: var(--vscode-sideBar-background, transparent); }
+      .cl-card .k { font-size: 11px; opacity: .7; text-transform: uppercase; letter-spacing: .04em; }
+      .cl-card .v { font-size: 16px; font-weight: 600; margin-top: 2px; word-break: break-all; }
+      .cl-card .s { font-size: 11px; opacity: .7; margin-top: 2px; }
+      .cl-warnings { border-left: 3px solid var(--vscode-editorWarning-foreground); background: var(--vscode-inputValidation-warningBackground, transparent); padding: 6px 10px; margin-bottom: 14px; font-size: 12px; }
+      .cl-warnings li { margin: 2px 0; }
+      .cl-section { margin: 18px 0 8px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .cl-section .spacer { flex: 1; }
+      .cl-rs { border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+      .cl-rs-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+      .cl-rs-head .name { font-weight: 600; }
+      .cl-rs-head .meta { font-size: 11px; opacity: .75; }
+      .cl-rs-head .spacer { flex: 1; }
+      .cl-members { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+      .cl-member { border: 1px solid var(--vscode-panel-border); border-left-width: 4px; border-radius: 6px; padding: 8px; font-size: 12px; display: grid; gap: 4px; }
+      .cl-member.PRIMARY { border-left-color: var(--vscode-charts-green); }
+      .cl-member.SECONDARY { border-left-color: var(--vscode-charts-blue); }
+      .cl-member.ARBITER { border-left-color: var(--vscode-charts-purple); }
+      .cl-member.down { border-left-color: var(--vscode-charts-red); opacity: .85; }
+      .cl-member.other { border-left-color: var(--vscode-charts-yellow); }
+      .cl-member .host { font-family: var(--mc-font-mono); font-weight: 600; word-break: break-all; }
+      .cl-member .state { font-weight: 600; }
+      .cl-member .flags { display: flex; gap: 4px; flex-wrap: wrap; }
+      .cl-member .actions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+      .cl-member .actions .mc-btn { min-height: 22px; padding: 1px 6px; font-size: 11px; }
+      .cl-lag-bar { height: 4px; border-radius: 2px; background: var(--vscode-panel-border); overflow: hidden; }
+      .cl-lag-bar > div { height: 100%; background: var(--vscode-charts-green); }
+      .cl-lag-bar.warn > div { background: var(--vscode-charts-yellow); }
+      .cl-lag-bar.bad > div { background: var(--vscode-charts-red); }
+      .cl-diagram { display: grid; gap: 10px; }
+      .cl-tier { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
+      .cl-tier-label { font-size: 11px; opacity: .7; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; }
+      .cl-router { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 6px 10px; font-family: var(--mc-font-mono); font-size: 12px; }
+      .cl-router.stale { border-color: var(--vscode-charts-yellow); }
+      .cl-arrow { text-align: center; opacity: .5; font-size: 14px; line-height: 1; }
+      .cl-dist { display: flex; height: 14px; border-radius: 3px; overflow: hidden; min-width: 160px; background: var(--vscode-panel-border); }
+      .cl-dist > div { height: 100%; }
+      .cl-legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; margin: 6px 0; }
+      .cl-legend span::before { content: ''; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; background: var(--c); vertical-align: -1px; }
+      .cl-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+      .cl-table th, .cl-table td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--vscode-panel-border); vertical-align: top; }
+      .cl-table th { font-weight: 600; opacity: .8; }
+      .cl-table td.mono { font-family: var(--mc-font-mono); }
+      .cl-table .mc-btn { min-height: 22px; padding: 1px 6px; font-size: 11px; margin: 0 2px 2px 0; }
+      .cl-form { display: grid; gap: 8px; min-width: min(560px, 90vw); }
+      .cl-form label { display: grid; gap: 3px; font-size: 12px; }
+      .cl-form .row { display: flex; gap: 8px; flex-wrap: wrap; }
+      .cl-form .row > * { flex: 1; }
+      .cl-report { font-size: 12px; margin: 6px 0; }
+      .cl-report .err { color: var(--vscode-errorForeground); }
+      .cl-report .warn { color: var(--vscode-editorWarning-foreground); }
+      .cl-report .ok { color: var(--vscode-charts-green); }
+      .cl-config { width: min(820px, 90vw); height: 52vh; font-family: var(--mc-font-mono); font-size: 12px; }
+      .cl-empty { opacity: .7; font-size: 12px; padding: 8px 0; }
+      .cl-pill { font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--vscode-panel-border); }
+      .cl-pill.on { border-color: var(--vscode-charts-green); color: var(--vscode-charts-green); }
+      .cl-pill.off { border-color: var(--vscode-charts-yellow); color: var(--vscode-charts-yellow); }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div class="mc-toolbar">
+        <span class="mc-namespace" id="title">Cluster</span>
+        <button class="mc-btn" id="btn-refresh" title="Refresh">⟳ Refresh</button>
+        <label style="font-size: 12px; display: flex; align-items: center; gap: 4px;"><input type="checkbox" id="auto" /> auto (10s)</label>
+        <span class="spacer"></span>
+        <span id="updated" style="font-size: 11px; opacity: .7;"></span>
+      </div>
+      <div class="mc-tabs" id="tabs"></div>
+      <div class="cl-scroll" id="content">
+        <div class="mc-empty"><span class="mc-spinner"></span> Loading…</div>
+      </div>
+    </div>
+    <div id="modal-root"></div>
+    <script nonce="{{nonce}}" src="./index.js"></script>
+  </body>
+</html>

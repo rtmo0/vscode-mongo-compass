@@ -26,7 +26,14 @@ export class ConnectionManager {
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
+  /** Runs before a connection is opened, e.g. to start a port-forward and refresh its URI. */
+  private beforeConnect?: (id: string) => Promise<void>;
+
   constructor(private readonly store: ConnectionStore) {}
+
+  setBeforeConnect(hook: ((id: string) => Promise<void>) | undefined): void {
+    this.beforeConnect = hook;
+  }
 
   get all(): LiveConnection[] {
     return [...this.connections.values()];
@@ -90,7 +97,15 @@ export class ConnectionManager {
     if (inFlight) {
       return inFlight;
     }
-    const attempt = this.open(id, entry).finally(() => {
+    const prepare = this.beforeConnect ? this.beforeConnect(id) : Promise.resolve();
+    const attempt = prepare.then(() => {
+      // The hook may have replaced the entry (e.g. with a new connection string).
+      const current = this.connections.get(id);
+      if (!current) {
+        throw new Error(`Unknown connection "${id}"`);
+      }
+      return isConnected(current) ? current : this.open(id, current);
+    }).finally(() => {
       if (this.pending.get(id) === attempt) {
         this.pending.delete(id);
       }
@@ -265,12 +280,16 @@ async function readTopology(client: MongoClient): Promise<TopologyInfo> {
 
   const version = String(buildInfo.version ?? hello.maxWireVersion ?? 'unknown');
   const modules = (buildInfo.modules ?? []) as string[];
-  const isAtlas = /\.mongodb\.net$/i.test(String(hello.me ?? hello.primary ?? '')) ||
-    /\.mongodb\.dev$/i.test(String(hello.me ?? hello.primary ?? ''));
+  // `me` / `primary` are `host:port`; a mongos reports neither, so fall back to the seed list.
+  const hosts = [hello.me, hello.primary, ...(hello.hosts ?? [])].filter(Boolean).map(String);
+  if (hosts.length === 0) {
+    hosts.push(...client.options.hosts.map((h) => h.toString()));
+  }
+  const isAtlas = hosts.some((h) => /\.mongodb\.(net|dev)(:\d+)?$/i.test(h));
 
   return {
     serverVersion: version,
-    topologyType: String(hello.msg ?? (hello.setName ? 'replicaSet' : hello.hosts ? 'sharded' : 'standalone')),
+    topologyType: hello.msg === 'isdbgrid' ? 'sharded' : hello.setName ? 'replicaSet' : 'standalone',
     isAtlas,
     isDataLake: Boolean(buildInfo.dataLake),
     isGenuine: !modules.includes('amazon-documentdb') && !modules.includes('cosmosdb'),

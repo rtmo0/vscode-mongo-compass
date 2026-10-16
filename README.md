@@ -2,6 +2,8 @@
 
 An independent MongoDB GUI for VS Code: connections, document browsing with a query bar, CRUD, an aggregation pipeline editor and visual stage builder with `$lookup` / `$graphLookup` forms, context-aware autocomplete, index management, schema analysis, explain plans, validation rules, import/export, server stats and query history.
 
+It also deploys and operates MongoDB: create standalone servers, replica sets and sharded clusters on **Docker**, as **local processes**, on **Kubernetes** (Percona Operator, MongoDB Community operator or a plain StatefulSet) or in **MongoDB Atlas**; see the cluster topology; add and remove members, shards and routers; change the primary; shard collections; and run rolling restarts and upgrades — with safety checks before every topology change.
+
 > This community extension is not affiliated with, endorsed by, or sponsored by MongoDB, Inc. MongoDB and MongoDB Compass are trademarks of MongoDB, Inc.
 
 Built on the official [`mongodb`](https://www.npmjs.com/package/mongodb) Node driver and [`bson`](https://www.npmjs.com/package/bson).
@@ -91,6 +93,38 @@ Built on the official [`mongodb`](https://www.npmjs.com/package/mongodb) Node dr
 - Query history (find / aggregate / explain / command) with re-open
 - My Queries: saved queries & pipelines
 
+### Cluster administration (Cluster view + Cluster Overview panel)
+- **Topology** of every connected deployment: replica set members with state, health, replication lag, priority / votes / hidden / delay / tags, sync source and oplog window; for sharded clusters the routers, config server replica set, every shard's members, the balancer and the sharded collections
+- **Elections**: step down the primary, **make any secondary primary** (other secondaries are frozen and the primary steps down — the config is not touched; falls back to a temporary priority takeover when members are not reachable directly), freeze / unfreeze, maintenance mode, sync from
+- **Membership** through `replSetReconfig`: add a secondary, hidden, delayed, non-voting member or arbiter; remove members; change priority, votes, hidden, delay and tags; edit the full config in the panel
+- **Safety checks** before every reconfig: majority still reachable, one voting change at a time, hidden / delayed / arbiter members with priority 0, at most 7 voters, even-voter and PSA warnings. A change that fails a check is not applied (forced reconfig only from the config editor, explicitly)
+- **Sharding**: shard a collection (hashed or ranged, creating the index if needed), reshard, refine the shard key, `analyzeShardKey`, unshard / move collections (8.0), add / drain / remove shards (with `movePrimary` of their databases), chunk and data distribution per shard, per-collection balancing, balancer start / stop / window, zones and zone key ranges, `moveRange`, split
+- **Settings**: featureCompatibilityVersion, cluster-wide default write concern, database profiler (level / slowms, browse `system.profile`), oplog browser
+- **Users & roles**: list users across databases, create / drop users, change passwords, grant / revoke roles
+- **Per member**: `serverStatus`, recent log lines, mongosh straight to the member
+- **Monitoring**: background checks report elections, members going down or coming back, and secondaries falling behind; a status bar item shows healthy / total members of the active cluster
+
+### Deployments (Deployments view)
+Create MongoDB from VS Code, see what runs where, and operate it. Every deployment gets a saved connection, so the explorer, the cluster view and all data tools work on it immediately.
+
+| | Docker | Local processes | Kubernetes | MongoDB Atlas |
+| --- | --- | --- | --- | --- |
+| Standalone / replica set / sharded | ✔ / ✔ / ✔ | ✔ / ✔ / ✔ | StatefulSet: standalone, replica set · Percona Operator: replica set, sharded · MongoDB Community: replica set | M0, Flex, dedicated replica set / sharded |
+| Add / remove members, scale | ✔ (any member type) | ✔ | ✔ (through the operator, or the extension for StatefulSets) | node count 3 / 5 / 7 |
+| Add / remove shards and routers | ✔ (shard draining included) | ✔ | Percona | shards |
+| Start / stop | ✔ | ✔ | Percona (pause), StatefulSet (scale to 0) | pause / resume (M10+) |
+| Restart node, rolling restart | ✔ | ✔ | ✔ (pod deletion) | — |
+| Upgrade | rolling, node by node | rolling, from a new binaries folder | through the resource | major version |
+| Failure simulation | kill, freeze (pause) | kill, freeze (SIGSTOP) | kill pod | test failover |
+| Logs, shell, describe | ✔ | ✔ | ✔ | logs download, process info |
+| Export | docker-compose with an init service | bash script | resource YAML | API request body |
+
+- **Docker**: members share one network namespace, each mongod on its own port published on `127.0.0.1`, so the replica set config uses `localhost:<port>` and drivers can discover members and fail over from this machine. Authentication uses a generated keyfile and admin password (OS keychain)
+- **Kubernetes**: pick a kubectl context and namespace; the Percona Operator (1.22) or MongoDB Controllers for Kubernetes are installed on demand. Connections go through `kubectl port-forward` (restarted automatically); members are reachable for the cluster view through per-pod forwards. Existing Percona / MongoDBCommunity resources and mongo StatefulSets can be **attached**. Contexts matching `mongoCompass.kubernetes.protectedContexts` (default `*prod*`) require typing the context name before any change
+- **Atlas**: sign in with a service account or an API key; create clusters (with a database user and an IP access list entry) or import existing ones
+- **Rolling operations** follow MongoDB's order: config servers, then shards, then routers; secondaries one at a time (waiting until healthy and caught up), then the primary after a step-down; the balancer is paused meanwhile
+- Back up a deployment with mongodump (`--oplog` on replica sets), copy its password or connection string, forget it without deleting anything, or destroy it (keeping data if you like)
+
 ### Export to Language (Compass `compass-export-to-language`)
 - mongosh, JavaScript, TypeScript, Python, Java, C#, Go, PHP, Ruby, Rust, Compass
 
@@ -101,6 +135,8 @@ Built on the official [`mongodb`](https://www.npmjs.com/package/mongodb) Node dr
 - VS Code 1.85 or newer.
 - A reachable MongoDB deployment. Standalone servers, replica sets, sharded clusters and MongoDB Atlas are supported by the official Node.js driver.
 - `mongosh`, `mongodump`, and `mongorestore` must be installed separately and available on `PATH` for the corresponding commands. `mongodump` / `mongorestore` require MongoDB Database Tools 100.3.0 or newer.
+- Deployments need, depending on the target: Docker (Docker Desktop or Engine), `mongod` / `mongos` on `PATH` or in `mongoCompass.local.binDir`, `kubectl` with a kubeconfig (plus `helm` for the MongoDB Community operator), or an Atlas service account / API key.
+- Cluster administration needs a user with `clusterManager` / `clusterAdmin` (sharding commands: `clusterManager` on a mongos).
 
 ```bash
 npm install
@@ -113,6 +149,15 @@ Press **F5** in VS Code to launch the Extension Development Host.
 2. **Add Connection** (or *Connect with URI*), e.g. `mongodb://localhost:27017`.
 3. Expand a connection → databases → collections.
 4. Click a collection to open the **Documents** view, or use the context menu for Aggregation / Indexes / Schema / Validation / Explain / Export.
+
+### Deploy a cluster
+
+1. In the **Deployments** view click **New Deployment** (`+`).
+2. Choose where it runs (Docker, local processes, Kubernetes or Atlas), the topology (standalone, replica set or sharded), the version and the number of members, shards and routers.
+3. When it is ready, choose **Connect & show cluster**: the deployment appears under **Connections**, its topology under **Cluster**, and the **Cluster Overview** panel opens.
+4. Manage it from the context menus: add or remove members and shards, make a member primary, restart nodes, simulate failures, run a rolling upgrade, export it as docker-compose / YAML, or destroy it.
+
+Existing clusters work too: connect to them as usual to use the **Cluster** view, attach Kubernetes deployments with **Attach Kubernetes Deployment**, or import Atlas clusters with **Import Atlas Clusters**.
 
 ## Configuration
 
@@ -130,6 +175,14 @@ Press **F5** in VS Code to launch the Extension Development Host.
 | `mongoCompass.connectionTimeoutMS` | `30000` | Server selection timeout |
 | `mongoCompass.exportBatchSize` | `1000` | Export batch size |
 | `mongoCompass.autoPreviewPipeline` | `true` | Auto re-run aggregation preview |
+| `mongoCompass.cluster.monitorIntervalSeconds` | `30` | Health checks of connected clusters (0 = off) |
+| `mongoCompass.cluster.lagWarningSeconds` | `30` | Replication lag that triggers a warning |
+| `mongoCompass.cluster.notifications` | `true` | Notify about elections, members down / back, lag |
+| `mongoCompass.deployments.refreshIntervalSeconds` | `15` | Deployments view refresh while visible (0 = off) |
+| `mongoCompass.local.binDir` | `""` | Folder with `mongod` / `mongos` for local deployments |
+| `mongoCompass.kubernetes.protectedContexts` | `["*prod*"]` | Contexts where changes require typing the context name |
+| `mongoCompass.kubernetes.perconaOperatorVersion` | `1.22.0` | Percona Operator version installed / used as `crVersion` |
+| `mongoCompass.kubernetes.communityOperatorChart` | `mongodb/mongodb-kubernetes` | Helm chart for MongoDBCommunity resources |
 
 ## Architecture
 
@@ -149,16 +202,30 @@ src/
     queryHistory.ts        # recent queries
     myQueries.ts           # my-queries-storage
     config.ts, logger.ts, types.ts
-  explorer/        # TreeView (sidebar navigation)
+    cluster/
+      clusterService.ts    # topology, elections, reconfig, sharding, balancer, zones, users, profiler
+      safety.ts            # replica set config / majority checks before replSetReconfig
+      nodeClients.ts       # direct connections to single members (+ host / credential resolvers)
+      clusterMonitor.ts    # background health checks, election / lag notifications, status bar
+  deploy/
+    types.ts               # DeploymentProvider interface, specs, records
+    registry.ts            # deployments, passwords (SecretStorage), saved connections
+    managedCluster.ts      # bootstrap / membership / shards for localhost:<port> layouts
+    rolling.ts             # rolling restart / upgrade orchestration
+    docker/, local/        # Docker containers, local mongod processes
+    kubernetes/            # kubectl, port-forwards, Percona / Community / StatefulSet manifests
+    atlas/                 # Atlas Admin API v2 client (service account / API key) and provider
+  explorer/        # TreeView (sidebar navigation): connections, cluster, deployments, tools
   webviews/        # webview panels
     baseWebview.ts         # shared panel infra (CSP, messaging)
     documentsPanel.ts      # compass-crud
     aggregationPanel.ts    # compass-aggregations
     dataPanel.ts           # indexes/schema/validation/explain/stats/history/…
+    clusterPanel.ts        # cluster overview: topology, members, sharding, users, config editor
     documents/, aggregation/, dataview/   # webview front-ends
     aggregation/builder.ts # visual pipeline builder ($lookup / $graphLookup forms)
     shared/                # shared CSS + client helpers (highlighting, autocomplete)
-  commands/        # connection form
+  commands/        # connection form, cluster and deployment commands (incl. the deployment wizard)
   extension.ts     # activation + command registration
 ```
 
@@ -178,6 +245,8 @@ Install the resulting file with **Extensions: Install from VSIX...** before publ
 - The extension does not include telemetry or send database contents to an external service.
 - Database queries and commands are sent only to the MongoDB deployment selected by the user.
 - Review the target database before using destructive operations such as drop, delete, restore, `$out` or `$merge`.
+- Deployment admin passwords and Atlas credentials are stored in SecretStorage. Keyfiles and passwords reach containers and pods over stdin, never as command-line arguments; Docker ports are published on `127.0.0.1` only.
+- Kubernetes changes in contexts matching `mongoCompass.kubernetes.protectedContexts` need the context name typed; deleting a deployment the extension did not create needs its name typed.
 
 ## Support
 
@@ -191,6 +260,10 @@ Report defects through the repository issue tracker. Include the extension versi
 - Autocomplete field names come from a sample of 100 documents, so rarely used fields may be missing. Collection names are not suggested inside `$lookup.from` in Text mode (the Builder form lists them).
 - Editing a pipeline in Builder mode reformats its text and drops comments.
 - Data modeling diagrams, the embedded mongosh, and the GenAI assistant from Compass are out of scope.
+- Kubernetes replica sets are reached through a port-forward to the primary with `directConnection=true`; after a failover, reconnect to follow the new primary. Sharded clusters go through the mongos service.
+- With an operator (Percona, MongoDB Community) membership changes go through the custom resource — the operator would revert a manual `replSetReconfig`. Kubernetes removes the highest pod ordinal when scaling down.
+- Local-process deployments keep running when VS Code closes; stop or destroy them from the Deployments view.
+- Atlas M0 / Flex clusters can not be paused, scaled or failed over through the API.
 
 ## License
 
